@@ -1,0 +1,98 @@
+name: Build desktop installers
+
+# Manual trigger (Actions tab -> "Build desktop installers" -> "Run workflow")
+# plus automatic builds on every push to main and on version tags, so a tag
+# push like `v0.1.0` produces a GitHub Release with all three installers
+# attached.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            name: macOS (.dmg)
+          - platform: windows-latest
+            name: Windows (.msi)
+          - platform: ubuntu-22.04
+            name: Linux (.deb/.AppImage)
+
+    runs-on: ${{ matrix.platform }}
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Modern stable Rust — this is the piece the sandbox this project was
+      # drafted in couldn't provide (it's pinned to an old Cargo). Nothing
+      # about the code requires anything exotic; a normal current stable
+      # toolchain is all that's needed here.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Tauri's Linux build links against webkit2gtk/libsoup at build time.
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Run engine test suite (domain + application + infrastructure)
+        run: cargo test -p pm-domain -p pm-application -p pm-infrastructure
+
+      - name: Build installer
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          # Only actually creates a GitHub Release + attaches installers
+          # when the trigger was a `v*` tag push; a plain push to main or a
+          # manual run just uploads build artifacts (see the step below)
+          # without publishing a public release.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('Portfolio Manager {0}', github.ref_name) || '' }}
+          releaseDraft: true
+          prerelease: true
+
+      # Always upload as a workflow artifact too, so you can grab the
+      # installer from the Actions run even on a plain push/manual trigger
+      # that didn't create a release.
+      # NOTE: apps/desktop/src-tauri is a member of the Cargo *workspace*
+      # rooted at the repo root (see the root Cargo.toml), so the build
+      # output lands in the workspace's single shared target/ directory at
+      # the repo root -- NOT inside apps/desktop/src-tauri/target. That's
+      # the actual path used below; a per-crate target/ path here would
+      # silently match nothing.
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-manager-${{ matrix.platform }}
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+          if-no-files-found: warn
