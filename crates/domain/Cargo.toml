@@ -1,0 +1,16 @@
+[package]
+name = "pm-domain"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rust_decimal = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+getrandom = "=0.2.15"
+
+[dev-dependencies]
+rust_decimal_macros = "1"

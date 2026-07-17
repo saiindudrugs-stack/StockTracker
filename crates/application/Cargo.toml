@@ -1,0 +1,17 @@
+[package]
+name = "pm-application"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pm-domain = { path = "../domain" }
+rust_decimal = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+rust_decimal_macros = "1"

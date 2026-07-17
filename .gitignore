@@ -1,0 +1,19 @@
+# Rust
+/target
+Cargo.lock.bak
+
+# Node / frontend
+apps/desktop/node_modules
+apps/desktop/dist
+
+# Tauri build output
+apps/desktop/src-tauri/target
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Local dev database (seeded demo data)
+*.db
+*.db-wal
+*.db-shm

@@ -1,0 +1,19 @@
+[package]
+name = "pm-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+pm-domain = { path = "../../../crates/domain" }
+pm-application = { path = "../../../crates/application" }
+pm-infrastructure = { path = "../../../crates/infrastructure" }
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+rust_decimal = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
