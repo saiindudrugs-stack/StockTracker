@@ -1,0 +1,35 @@
+// These mirror the #[derive(Serialize)] structs in src-tauri/src/main.rs
+// exactly. If a Rust field is renamed, this file goes out of sync silently
+// (Tauri's IPC has no shared schema check) — worth revisiting with a
+// codegen step (e.g. specta) once the command surface stops changing every
+// few days.
+
+export interface DashboardSummary {
+  net_worth: string;
+  overall_unrealized_pnl: string;
+  overall_realized_pnl: string;
+  holdings_priced: number;
+  holdings_missing_price: number;
+}
+
+export interface HoldingView {
+  symbol: string;
+  sector: string | null;
+  quantity: string;
+  avg_cost: string;
+  last_price: string | null;
+  market_value: string | null;
+  unrealized_pnl: string | null;
+}
+
+export interface InstrumentView {
+  symbol: string;
+  sector: string | null;
+}
+
+export interface PriceHistoryPoint {
+  date: string;
+  close: string;
+}
+
+export type ScreenId = "dashboard" | "holdings" | "chart" | "settings";

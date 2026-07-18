@@ -42,11 +42,64 @@ struct AppState {
 #[derive(Serialize)]
 struct HoldingView {
     symbol: String,
+    sector: Option<String>,
     quantity: String,
     avg_cost: String,
     last_price: Option<String>,
     market_value: Option<String>,
     unrealized_pnl: Option<String>,
+}
+
+#[derive(Serialize)]
+struct InstrumentView {
+    symbol: String,
+    sector: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PriceHistoryPoint {
+    date: String,
+    close: String,
+}
+
+#[tauri::command]
+async fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentView>, String> {
+    // v1 shortcut: the demo only ever seeds RELIANCE and TCS, and there's no
+    // "list all instruments" method on the repository trait yet (it wasn't
+    // a requirement any use-case needed — see the same reasoning as
+    // find_by_symbol in SqliteInstrumentRepository). Hardcoding the two
+    // known demo symbols here is honest about that gap rather than adding
+    // an unused-elsewhere trait method just to avoid it.
+    let mut views = Vec::new();
+    for symbol in ["RELIANCE", "TCS"] {
+        if let Some(instrument) = state.instruments.find_by_symbol(symbol).await.map_err(|e| e.to_string())? {
+            views.push(InstrumentView { symbol: instrument.symbol, sector: instrument.sector });
+        }
+    }
+    Ok(views)
+}
+
+#[tauri::command]
+async fn get_price_history(state: State<'_, AppState>, symbol: String) -> Result<Vec<PriceHistoryPoint>, String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+
+    let to = chrono::Utc::now().date_naive();
+    let from = to - chrono::Duration::days(60);
+    let series = state
+        .prices
+        .daily_series(instrument.id, from, to)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(series
+        .into_iter()
+        .map(|(date, close)| PriceHistoryPoint { date: date.format("%Y-%m-%d").to_string(), close: close.to_string() })
+        .collect())
 }
 
 #[tauri::command]
@@ -80,6 +133,7 @@ async fn list_holdings(state: State<'_, AppState>) -> Result<Vec<HoldingView>, S
             .map_err(|e| e.to_string())?;
         views.push(HoldingView {
             symbol: instrument.symbol,
+            sector: instrument.sector,
             quantity: h.quantity.to_string(),
             avg_cost: h.avg_cost.to_string(),
             last_price: ltp.map(|p| p.to_string()),
@@ -137,6 +191,51 @@ async fn compute_xirr_for_symbol(state: State<'_, AppState>, symbol: String) -> 
         .map_err(|e| e.to_string())
 }
 
+/// Deterministic pseudo-random walk (simple LCG, fixed seed) — no external
+/// crate needed, and deterministic so every fresh install shows the same
+/// demo chart rather than a different random one each run, which would make
+/// screenshots/bug reports inconsistent between machines.
+async fn seed_price_history(
+    state: &AppState,
+    instrument_id: Uuid,
+    start_price: Decimal,
+    seed: u64,
+) -> Result<(), String> {
+    let mut rng_state = seed;
+    let mut next_step = || -> Decimal {
+        // xorshift-style LCG step — good enough for demo data, not
+        // cryptographic, never used for anything security-sensitive.
+        rng_state ^= rng_state << 13;
+        rng_state ^= rng_state >> 7;
+        rng_state ^= rng_state << 17;
+        // Map to a small daily percentage move in roughly [-1.5%, +1.5%].
+        let bucket = (rng_state % 301) as i64 - 150;
+        Decimal::from(bucket) / Decimal::from(10000)
+    };
+
+    let today = chrono::Utc::now().date_naive();
+    let mut price = start_price;
+    let mut day_prices = Vec::with_capacity(60);
+    for i in (0..60).rev() {
+        let date = today - chrono::Duration::days(i);
+        let pct_move = next_step();
+        price = (price * (Decimal::ONE + pct_move)).round_dp(2);
+        if price <= Decimal::ZERO {
+            price = start_price; // guard against an implausible walk to zero
+        }
+        day_prices.push((date, price));
+    }
+
+    for (date, close) in day_prices {
+        state
+            .prices
+            .upsert_daily_bar(instrument_id, date, close)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Seeds two demo instruments + one buy each + a price, only if the demo
 /// portfolio has no holdings yet — so re-launching doesn't duplicate data.
 async fn seed_demo_data_if_empty(state: &AppState) -> Result<(), String> {
@@ -169,16 +268,13 @@ async fn seed_demo_data_if_empty(state: &AppState) -> Result<(), String> {
     state.instruments.upsert(&reliance).await.map_err(|e| e.to_string())?;
     state.instruments.upsert(&tcs).await.map_err(|e| e.to_string())?;
 
-    state
-        .prices
-        .upsert_daily_bar(reliance.id, chrono::Utc::now().date_naive(), Decimal::from_str("2510.00").unwrap())
-        .await
-        .map_err(|e| e.to_string())?;
-    state
-        .prices
-        .upsert_daily_bar(tcs.id, chrono::Utc::now().date_naive(), Decimal::from_str("4120.00").unwrap())
-        .await
-        .map_err(|e| e.to_string())?;
+    // 60 days of daily closes via a small deterministic pseudo-random walk —
+    // no external crate needed, and deterministic (fixed seed) so every
+    // fresh install shows the same demo chart rather than a different
+    // random one each time, which would make screenshots/bug reports
+    // inconsistent between runs.
+    seed_price_history(state, reliance.id, Decimal::from_str("2450.00").unwrap(), 0x5EED_0001).await?;
+    seed_price_history(state, tcs.id, Decimal::from_str("3950.00").unwrap(), 0x5EED_0002).await?;
 
     let use_case = RecordTransactionUseCase::new(state.transactions.clone(), state.holdings.clone());
     use_case
@@ -246,6 +342,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_dashboard_summary,
             list_holdings,
+            list_instruments,
+            get_price_history,
             record_buy,
             compute_xirr_for_symbol
         ])

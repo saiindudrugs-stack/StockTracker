@@ -1,0 +1,23 @@
+import type { CSSProperties } from "react";
+
+export const colors = {
+  navy: "#1F3864",
+  accent: "#2E74B5",
+  surface: "#F2F2F2",
+  border: "#DDD",
+  textMuted: "#666",
+  success: "#1E7A34",
+  danger: "#B3261E",
+};
+
+export const cardStyle: CSSProperties = {
+  background: colors.surface,
+  borderRadius: 8,
+  padding: "12px 16px",
+};
+
+export const panelStyle: CSSProperties = {
+  border: `1px dashed ${colors.border}`,
+  borderRadius: 8,
+  padding: 16,
+};
