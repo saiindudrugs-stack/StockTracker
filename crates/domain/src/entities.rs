@@ -113,7 +113,12 @@ impl Holding {
                 let total_cost_before = self.avg_cost * self.quantity;
                 let incoming_cost = txn.quantity * txn.price.amount() + txn.fees.amount();
                 self.quantity += txn.quantity;
-                self.avg_cost = (total_cost_before + incoming_cost) / self.quantity;
+                // round_dp(2): INR's smallest subunit is the paisa (2 decimal
+                // places) — an average cost carried to 20+ digits isn't more
+                // "correct", it's floating-point-style noise from a division
+                // that doesn't terminate cleanly in base 10, and it leaks
+                // into every downstream display (dashboard, holdings table).
+                self.avg_cost = ((total_cost_before + incoming_cost) / self.quantity).round_dp(2);
             }
             TransactionType::Sell => {
                 if txn.quantity <= Decimal::ZERO {
@@ -143,7 +148,7 @@ impl Holding {
                 let total_cost = self.avg_cost * self.quantity;
                 self.quantity += txn.quantity;
                 if !self.quantity.is_zero() {
-                    self.avg_cost = total_cost / self.quantity;
+                    self.avg_cost = (total_cost / self.quantity).round_dp(2);
                 }
             }
             TransactionType::Split => {
@@ -154,7 +159,7 @@ impl Holding {
                 }
                 let total_cost = self.avg_cost * self.quantity;
                 self.quantity = txn.quantity;
-                self.avg_cost = total_cost / self.quantity;
+                self.avg_cost = (total_cost / self.quantity).round_dp(2);
             }
             TransactionType::Dividend => {
                 // Dividends don't change quantity/cost; they're cash income,
@@ -215,6 +220,38 @@ mod tests {
         // total cost = 1020 + (1100+20) = 2140, qty = 20 -> avg 107
         assert_eq!(h.quantity, dec!(20));
         assert_eq!(h.avg_cost, dec!(107));
+    }
+
+    /// Regression test for a real bug caught in the running desktop app:
+    /// dividing a clean total cost by a quantity that doesn't produce a
+    /// terminating decimal (e.g. .../85) yields a 20+ digit repeating
+    /// decimal from rust_decimal's exact division. That's not "more
+    /// precise" — INR has no subunit smaller than the paisa — and it leaked
+    /// into every downstream display: the holdings table, the dashboard's
+    /// aggregated P/L, everywhere avg_cost or anything derived from it
+    /// showed up. avg_cost must always come out at 2 decimal places.
+    #[test]
+    fn avg_cost_never_carries_more_precision_than_a_paisa() {
+        let instrument_id = Uuid::new_v4();
+        let mut h = Holding::empty(Uuid::new_v4(), instrument_id);
+        let d = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+
+        // Mirrors the exact shape that produced the bug: enough buys that
+        // total_cost / quantity doesn't terminate in base 10.
+        h.apply(&buy(instrument_id, dec!(10), dec!(2450.50), d)).unwrap();
+        h.apply(&buy(instrument_id, dec!(75), dec!(2500.00), d)).unwrap();
+
+        assert_eq!(h.quantity, dec!(85));
+        assert_eq!(
+            h.avg_cost.scale(),
+            2,
+            "avg_cost must be stored at 2 decimal places, not rust_decimal's raw division result"
+        );
+
+        // The bug was visible through unrealized_pnl too — confirm it's
+        // clean all the way through, not just at the avg_cost field itself.
+        let ltp = dec!(2510.00);
+        assert_eq!(h.unrealized_pnl(ltp).scale(), 2);
     }
 
     #[test]
