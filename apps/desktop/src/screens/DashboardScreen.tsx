@@ -8,19 +8,19 @@ import { cardStyle, colors, panelStyle } from "../lib/theme";
 // not a real allocation engine.
 const SECTOR_COLORS = ["#2E74B5", "#5B9BD5", "#9DC3E6", "#1F3864", "#7F9EC2"];
 
-export function DashboardScreen() {
+export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [holdings, setHoldings] = useState<HoldingView[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.getDashboardSummary(), api.listHoldings()])
+    Promise.all([api.getDashboardSummary(portfolioId), api.listHoldings(portfolioId)])
       .then(([s, h]) => {
         setSummary(s);
         setHoldings(h);
       })
       .catch((e) => setError(String(e)));
-  }, []);
+  }, [portfolioId]);
 
   // Allocation by sector, computed client-side from market value — there's
   // no dedicated allocation use-case yet (SRS 2.2.3 "Asset Allocation,

@@ -4,6 +4,11 @@
 // codegen step (e.g. specta) once the command surface stops changing every
 // few days.
 
+export interface PortfolioView {
+  id: string;
+  name: string;
+}
+
 export interface DashboardSummary {
   net_worth: string;
   overall_unrealized_pnl: string;

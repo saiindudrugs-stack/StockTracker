@@ -115,6 +115,22 @@ impl InstrumentRepository for SqliteInstrumentRepository {
             .await?;
         row.map(parse_instrument).transpose()
     }
+
+    async fn list_all(&self) -> Result<Vec<Instrument>, RepositoryError> {
+        let rows = self
+            .pool
+            .with_conn(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, isin, symbol, asset_class, exchange, sector FROM instrument ORDER BY symbol ASC",
+                )?;
+                let rows = stmt
+                    .query_map([], row_to_instrument)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await?;
+        rows.into_iter().map(parse_instrument).collect()
+    }
 }
 
 impl SqliteInstrumentRepository {
@@ -181,5 +197,25 @@ mod tests {
 
         let fetched = repo.get(instrument.id).await.unwrap();
         assert_eq!(fetched.sector.as_deref(), Some("Renamed"));
+    }
+
+    #[tokio::test]
+    async fn list_all_returns_every_instrument_sorted_by_symbol() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let repo = SqliteInstrumentRepository::new(pool);
+
+        let mut tcs = sample();
+        tcs.symbol = "TCS".to_string();
+        tcs.isin = Isin::parse("INE467B01029").unwrap();
+        let mut reliance = sample();
+        reliance.symbol = "RELIANCE".to_string();
+
+        repo.upsert(&tcs).await.unwrap();
+        repo.upsert(&reliance).await.unwrap();
+
+        let all = repo.list_all().await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].symbol, "RELIANCE"); // alphabetical, not insertion order
+        assert_eq!(all[1].symbol, "TCS");
     }
 }

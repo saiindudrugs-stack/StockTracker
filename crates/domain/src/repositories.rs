@@ -5,7 +5,7 @@
 //! directly, so the storage engine can be swapped without touching business
 //! logic — this is the mechanism behind the "Extensibility" NFR.
 
-use crate::entities::{Holding, Instrument, Transaction};
+use crate::entities::{Holding, Instrument, Portfolio, Transaction};
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -17,6 +17,20 @@ pub enum RepositoryError {
     Storage(String),
     #[error("not found: {0}")]
     NotFound(String),
+}
+
+/// Portfolios themselves (HLD Section 5.1 `portfolio` table). Added when the
+/// single-user personal tool grew a real second requirement: a family with
+/// several individual accounts, each needing its own isolated holdings list
+/// — exactly the "may productize later" seam the domain layer was built
+/// with from the start (every Transaction/Holding already carries a
+/// portfolio_id). This trait is what turns that latent scoping into an
+/// actual "create a portfolio, list portfolios, switch between them" feature.
+#[async_trait]
+pub trait PortfolioRepository: Send + Sync {
+    async fn create(&self, portfolio: &Portfolio) -> Result<(), RepositoryError>;
+    async fn list_all(&self) -> Result<Vec<Portfolio>, RepositoryError>;
+    async fn get(&self, id: Uuid) -> Result<Portfolio, RepositoryError>;
 }
 
 /// The append-only transaction ledger (SQLite+SQLCipher in production, per
@@ -41,6 +55,12 @@ pub trait InstrumentRepository: Send + Sync {
     async fn upsert(&self, instrument: &Instrument) -> Result<(), RepositoryError>;
     async fn get(&self, id: Uuid) -> Result<Instrument, RepositoryError>;
     async fn find_by_isin(&self, isin: &str) -> Result<Option<Instrument>, RepositoryError>;
+    /// Every instrument in the shared reference-data table. Added once
+    /// users could add their own tickers (rather than only the two demo
+    /// instruments) — at that point "list everything" stopped being an
+    /// unused trait method and became the only way to populate a ticker
+    /// picker.
+    async fn list_all(&self) -> Result<Vec<Instrument>, RepositoryError>;
 }
 
 /// Derived, rebuildable holding cache (HLD Section 5.1 `holding_snapshot`).

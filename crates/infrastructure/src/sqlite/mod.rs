@@ -13,11 +13,13 @@ use std::sync::{Arc, Mutex};
 
 pub mod holding_repository;
 pub mod instrument_repository;
+pub mod portfolio_repository;
 pub mod price_repository;
 pub mod transaction_repository;
 
 pub use holding_repository::SqliteHoldingRepository;
 pub use instrument_repository::SqliteInstrumentRepository;
+pub use portfolio_repository::SqlitePortfolioRepository;
 pub use price_repository::SqlitePriceRepository;
 pub use transaction_repository::SqliteTransactionRepository;
 
@@ -72,6 +74,14 @@ impl SqlitePool {
 /// SqlitePriceRepository's simplification note explains — DuckDB per the
 /// HLD is a drop-in swap behind the same `PriceRepository` trait.
 const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS portfolio (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    base_currency TEXT NOT NULL DEFAULT 'inr',
+    goal_tag TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS instrument (
     id TEXT PRIMARY KEY,
     isin TEXT NOT NULL UNIQUE,

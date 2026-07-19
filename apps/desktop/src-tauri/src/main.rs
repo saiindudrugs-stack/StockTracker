@@ -1,42 +1,49 @@
 //! Tauri shell: the thinnest possible layer between the UI and the engine
 //! built in Volume II, Slice 1. Every command below just deserializes IPC
-//! arguments, calls a use-case from `pm-application`, and serializes the
-//! result — no business logic lives here (HLD Section 3.1: Presentation
-//! layer depends on Application only).
+//! arguments, calls a use-case (or repository) from the engine crates, and
+//! serializes the result — no business logic lives here (HLD Section 3.1:
+//! Presentation layer depends on Application only).
 //!
-//! DEMO DATA NOTE: this seeds one demo portfolio with a couple of
-//! instruments and transactions on first launch, purely so the dashboard
-//! has something to show. There is no broker sync wired into the UI yet —
-//! that's the next slice (calling `ZerodhaAdapter` from a Tauri command and
-//! piping results through `RecordTransactionUseCase`).
+//! MULTI-PORTFOLIO NOTE: every portfolio-scoped command below takes an
+//! explicit `portfolio_id: String` argument from the frontend rather than a
+//! hardcoded demo id — this is what actually turns "a family with several
+//! individual accounts" into a real feature rather than one shared bucket.
+//! Instruments and prices are NOT portfolio-scoped (shared reference data,
+//! per HLD Section 5.1) — the same RELIANCE instrument row is looked up by
+//! every portfolio's holdings.
 
 use pm_application::use_cases::{
     ComputeXirrUseCase, DashboardSummary, DashboardSummaryUseCase, RecordTransactionUseCase,
 };
-use pm_domain::entities::{AssetClass, Holding, Instrument, Transaction, TransactionType};
-use pm_domain::value_objects::{Isin, Money};
-use pm_domain::repositories::{HoldingRepository, InstrumentRepository, PriceRepository, TransactionRepository};
+use pm_domain::entities::{AssetClass, Holding, Instrument, Portfolio, Transaction, TransactionType};
+use pm_domain::repositories::{
+    HoldingRepository, InstrumentRepository, PortfolioRepository, PriceRepository, TransactionRepository,
+};
+use pm_domain::value_objects::{Currency, Isin, Money};
 use pm_infrastructure::sqlite::{
-    SqliteHoldingRepository, SqliteInstrumentRepository, SqlitePool, SqlitePriceRepository,
-    SqliteTransactionRepository,
+    SqliteHoldingRepository, SqliteInstrumentRepository, SqlitePool, SqlitePortfolioRepository,
+    SqlitePriceRepository, SqliteTransactionRepository,
 };
 use rust_decimal::Decimal;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
 use std::sync::Arc;
 use tauri::{Manager, State};
 use uuid::Uuid;
 
-/// Fixed demo portfolio id so every launch looks at the same seeded data
-/// (a real build would read the "last opened portfolio" from settings —
-/// out of scope for this slice).
-const DEMO_PORTFOLIO_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0001);
-
 struct AppState {
+    portfolios: Arc<SqlitePortfolioRepository>,
     transactions: Arc<SqliteTransactionRepository>,
     holdings: Arc<SqliteHoldingRepository>,
     instruments: Arc<SqliteInstrumentRepository>,
     prices: Arc<SqlitePriceRepository>,
+}
+
+#[derive(Serialize)]
+struct PortfolioView {
+    id: String,
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -62,21 +69,75 @@ struct PriceHistoryPoint {
     close: String,
 }
 
+fn parse_portfolio_id(raw: &str) -> Result<Uuid, String> {
+    Uuid::parse_str(raw).map_err(|_| format!("invalid portfolio id '{raw}'"))
+}
+
+/// Deterministic, non-cryptographic placeholder ISIN for a user-added
+/// ticker that doesn't come with a real one (SRS 2.2.2's CSV/manual-entry
+/// path never specified an ISIN source). Prefixed "ZZ" — not a real ISIN
+/// country code — so it's visibly a placeholder if it ever surfaces in a
+/// report, rather than silently looking like a genuine identifier.
+fn placeholder_isin(symbol: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(symbol.as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02X}")).collect();
+    format!("ZZ{}", &hex[..10])
+}
+
+#[tauri::command]
+async fn list_portfolios(state: State<'_, AppState>) -> Result<Vec<PortfolioView>, String> {
+    let all = state.portfolios.list_all().await.map_err(|e| e.to_string())?;
+    Ok(all.into_iter().map(|p| PortfolioView { id: p.id.to_string(), name: p.name }).collect())
+}
+
+#[tauri::command]
+async fn create_portfolio(state: State<'_, AppState>, name: String) -> Result<PortfolioView, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("portfolio name can't be empty".to_string());
+    }
+    let portfolio = Portfolio {
+        id: Uuid::new_v4(),
+        name: trimmed.to_string(),
+        base_currency: Currency::Inr,
+        goal_tag: None,
+    };
+    state.portfolios.create(&portfolio).await.map_err(|e| e.to_string())?;
+    Ok(PortfolioView { id: portfolio.id.to_string(), name: portfolio.name })
+}
+
 #[tauri::command]
 async fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentView>, String> {
-    // v1 shortcut: the demo only ever seeds RELIANCE and TCS, and there's no
-    // "list all instruments" method on the repository trait yet (it wasn't
-    // a requirement any use-case needed — see the same reasoning as
-    // find_by_symbol in SqliteInstrumentRepository). Hardcoding the two
-    // known demo symbols here is honest about that gap rather than adding
-    // an unused-elsewhere trait method just to avoid it.
-    let mut views = Vec::new();
-    for symbol in ["RELIANCE", "TCS"] {
-        if let Some(instrument) = state.instruments.find_by_symbol(symbol).await.map_err(|e| e.to_string())? {
-            views.push(InstrumentView { symbol: instrument.symbol, sector: instrument.sector });
-        }
+    let all = state.instruments.list_all().await.map_err(|e| e.to_string())?;
+    Ok(all.into_iter().map(|i| InstrumentView { symbol: i.symbol, sector: i.sector }).collect())
+}
+
+/// Adds a new ticker the user wants to track. No broker/exchange validation
+/// happens here (SRS's Broker Adapter Framework isn't wired to this command
+/// yet) — this just registers the symbol as reference data so it can be
+/// bought/tracked. Exchange defaults to NSE and sector is left blank; both
+/// are editable-in-spirit but there's no edit command yet, only add.
+#[tauri::command]
+async fn add_instrument(state: State<'_, AppState>, symbol: String) -> Result<InstrumentView, String> {
+    let symbol = symbol.trim().to_uppercase();
+    if symbol.is_empty() {
+        return Err("symbol can't be empty".to_string());
     }
-    Ok(views)
+    if let Some(existing) = state.instruments.find_by_symbol(&symbol).await.map_err(|e| e.to_string())? {
+        return Ok(InstrumentView { symbol: existing.symbol, sector: existing.sector });
+    }
+    let instrument = Instrument {
+        id: Uuid::new_v4(),
+        isin: Isin::parse(&placeholder_isin(&symbol)).map_err(|e| e.to_string())?,
+        symbol: symbol.clone(),
+        asset_class: AssetClass::Equity,
+        exchange: "NSE".to_string(),
+        sector: None,
+    };
+    state.instruments.upsert(&instrument).await.map_err(|e| e.to_string())?;
+    Ok(InstrumentView { symbol: instrument.symbol, sector: instrument.sector })
 }
 
 #[tauri::command]
@@ -103,19 +164,18 @@ async fn get_price_history(state: State<'_, AppState>, symbol: String) -> Result
 }
 
 #[tauri::command]
-async fn get_dashboard_summary(state: State<'_, AppState>) -> Result<DashboardSummary, String> {
+async fn get_dashboard_summary(state: State<'_, AppState>, portfolio_id: String) -> Result<DashboardSummary, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
     let use_case = DashboardSummaryUseCase::new(state.holdings.clone(), state.prices.clone());
-    use_case
-        .execute(DEMO_PORTFOLIO_ID)
-        .await
-        .map_err(|e| e.to_string())
+    use_case.execute(portfolio_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn list_holdings(state: State<'_, AppState>) -> Result<Vec<HoldingView>, String> {
+async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Result<Vec<HoldingView>, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
     let holdings: Vec<Holding> = state
         .holdings
-        .list_for_portfolio(DEMO_PORTFOLIO_ID)
+        .list_for_portfolio(portfolio_id)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -147,20 +207,22 @@ async fn list_holdings(state: State<'_, AppState>) -> Result<Vec<HoldingView>, S
 #[tauri::command]
 async fn record_buy(
     state: State<'_, AppState>,
+    portfolio_id: String,
     symbol: String,
     quantity: String,
     price: String,
 ) -> Result<(), String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
     let instrument = state
         .instruments
         .find_by_symbol(&symbol)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("unknown symbol '{symbol}' — only demo-seeded instruments exist in this slice"))?;
+        .ok_or_else(|| format!("unknown symbol '{symbol}' — add it as a ticker first"))?;
 
     let txn = Transaction {
         id: Uuid::new_v4(),
-        portfolio_id: DEMO_PORTFOLIO_ID,
+        portfolio_id,
         instrument_id: instrument.id,
         transaction_type: TransactionType::Buy,
         quantity: Decimal::from_str(&quantity).map_err(|e| e.to_string())?,
@@ -177,7 +239,8 @@ async fn record_buy(
 }
 
 #[tauri::command]
-async fn compute_xirr_for_symbol(state: State<'_, AppState>, symbol: String) -> Result<f64, String> {
+async fn compute_xirr_for_symbol(state: State<'_, AppState>, portfolio_id: String, symbol: String) -> Result<f64, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
     let instrument = state
         .instruments
         .find_by_symbol(&symbol)
@@ -186,7 +249,7 @@ async fn compute_xirr_for_symbol(state: State<'_, AppState>, symbol: String) -> 
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
     let use_case = ComputeXirrUseCase::new(state.transactions.clone(), state.prices.clone());
     use_case
-        .execute_for_instrument(DEMO_PORTFOLIO_ID, instrument.id)
+        .execute_for_instrument(portfolio_id, instrument.id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -203,12 +266,9 @@ async fn seed_price_history(
 ) -> Result<(), String> {
     let mut rng_state = seed;
     let mut next_step = || -> Decimal {
-        // xorshift-style LCG step — good enough for demo data, not
-        // cryptographic, never used for anything security-sensitive.
         rng_state ^= rng_state << 13;
         rng_state ^= rng_state >> 7;
         rng_state ^= rng_state << 17;
-        // Map to a small daily percentage move in roughly [-1.5%, +1.5%].
         let bucket = (rng_state % 301) as i64 - 150;
         Decimal::from(bucket) / Decimal::from(10000)
     };
@@ -221,32 +281,36 @@ async fn seed_price_history(
         let pct_move = next_step();
         price = (price * (Decimal::ONE + pct_move)).round_dp(2);
         if price <= Decimal::ZERO {
-            price = start_price; // guard against an implausible walk to zero
+            price = start_price;
         }
         day_prices.push((date, price));
     }
 
     for (date, close) in day_prices {
-        state
-            .prices
-            .upsert_daily_bar(instrument_id, date, close)
-            .await
-            .map_err(|e| e.to_string())?;
+        state.prices.upsert_daily_bar(instrument_id, date, close).await.map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-/// Seeds two demo instruments + one buy each + a price, only if the demo
-/// portfolio has no holdings yet — so re-launching doesn't duplicate data.
-async fn seed_demo_data_if_empty(state: &AppState) -> Result<(), String> {
-    let existing = state
-        .holdings
-        .list_for_portfolio(DEMO_PORTFOLIO_ID)
-        .await
-        .map_err(|e| e.to_string())?;
-    if !existing.is_empty() {
+/// Seeds one demo portfolio ("My Portfolio") with two demo instruments and
+/// one buy each, only on first-ever launch (no portfolios exist yet) — so
+/// re-launching, or any portfolio the user creates afterward, doesn't get
+/// duplicate or unwanted demo data. A family's other 3 accounts are meant
+/// to be created for real via "+ Add portfolio" in the UI, not guessed at
+/// here with invented names.
+async fn seed_demo_data_if_first_launch(state: &AppState) -> Result<(), String> {
+    let existing_portfolios = state.portfolios.list_all().await.map_err(|e| e.to_string())?;
+    if !existing_portfolios.is_empty() {
         return Ok(());
     }
+
+    let demo_portfolio = Portfolio {
+        id: Uuid::new_v4(),
+        name: "My Portfolio".to_string(),
+        base_currency: Currency::Inr,
+        goal_tag: None,
+    };
+    state.portfolios.create(&demo_portfolio).await.map_err(|e| e.to_string())?;
 
     let reliance = Instrument {
         id: Uuid::new_v4(),
@@ -268,11 +332,6 @@ async fn seed_demo_data_if_empty(state: &AppState) -> Result<(), String> {
     state.instruments.upsert(&reliance).await.map_err(|e| e.to_string())?;
     state.instruments.upsert(&tcs).await.map_err(|e| e.to_string())?;
 
-    // 60 days of daily closes via a small deterministic pseudo-random walk —
-    // no external crate needed, and deterministic (fixed seed) so every
-    // fresh install shows the same demo chart rather than a different
-    // random one each time, which would make screenshots/bug reports
-    // inconsistent between runs.
     seed_price_history(state, reliance.id, Decimal::from_str("2450.00").unwrap(), 0x5EED_0001).await?;
     seed_price_history(state, tcs.id, Decimal::from_str("3950.00").unwrap(), 0x5EED_0002).await?;
 
@@ -280,7 +339,7 @@ async fn seed_demo_data_if_empty(state: &AppState) -> Result<(), String> {
     use_case
         .execute(Transaction {
             id: Uuid::new_v4(),
-            portfolio_id: DEMO_PORTFOLIO_ID,
+            portfolio_id: demo_portfolio.id,
             instrument_id: reliance.id,
             transaction_type: TransactionType::Buy,
             quantity: Decimal::from(10),
@@ -296,7 +355,7 @@ async fn seed_demo_data_if_empty(state: &AppState) -> Result<(), String> {
     use_case
         .execute(Transaction {
             id: Uuid::new_v4(),
-            portfolio_id: DEMO_PORTFOLIO_ID,
+            portfolio_id: demo_portfolio.id,
             instrument_id: tcs.id,
             transaction_type: TransactionType::Buy,
             quantity: Decimal::from(5),
@@ -327,22 +386,26 @@ fn main() {
             let pool = SqlitePool::open(db_path.to_str().unwrap()).expect("failed to open local database");
 
             let state = AppState {
+                portfolios: Arc::new(SqlitePortfolioRepository::new(pool.clone())),
                 transactions: Arc::new(SqliteTransactionRepository::new(pool.clone())),
                 holdings: Arc::new(SqliteHoldingRepository::new(pool.clone())),
                 instruments: Arc::new(SqliteInstrumentRepository::new(pool.clone())),
                 prices: Arc::new(SqlitePriceRepository::new(pool)),
             };
 
-            tauri::async_runtime::block_on(seed_demo_data_if_empty(&state))
+            tauri::async_runtime::block_on(seed_demo_data_if_first_launch(&state))
                 .expect("demo data seeding failed");
 
             app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            list_portfolios,
+            create_portfolio,
             get_dashboard_summary,
             list_holdings,
             list_instruments,
+            add_instrument,
             get_price_history,
             record_buy,
             compute_xirr_for_symbol
