@@ -20,6 +20,7 @@ use pm_domain::repositories::{
     HoldingRepository, InstrumentRepository, PortfolioRepository, PriceRepository, TransactionRepository,
 };
 use pm_domain::value_objects::{Currency, Isin, Money};
+use pm_infrastructure::market_data::{yahoo_finance::YahooFinanceProvider, MarketDataProvider};
 use pm_infrastructure::sqlite::{
     SqliteHoldingRepository, SqliteInstrumentRepository, SqlitePool, SqlitePortfolioRepository,
     SqlitePriceRepository, SqliteTransactionRepository,
@@ -38,6 +39,7 @@ struct AppState {
     holdings: Arc<SqliteHoldingRepository>,
     instruments: Arc<SqliteInstrumentRepository>,
     prices: Arc<SqlitePriceRepository>,
+    market_data: Arc<YahooFinanceProvider>,
 }
 
 #[derive(Serialize)]
@@ -55,6 +57,11 @@ struct HoldingView {
     last_price: Option<String>,
     market_value: Option<String>,
     unrealized_pnl: Option<String>,
+    /// Change vs. the previous trading day's close, as a fraction (e.g.
+    /// 0.021 = +2.1%) — None when there isn't at least one prior day of
+    /// price history yet (e.g. a ticker added and priced for the first
+    /// time today has nothing to compare against).
+    day_change_pct: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -191,6 +198,41 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Resu
             .latest_price(h.instrument_id)
             .await
             .map_err(|e| e.to_string())?;
+
+        // Day change: compare today's latest price against the most recent
+        // *prior* trading day's close in price_history. Looking back 10
+        // calendar days (not just "yesterday") covers weekends/holidays
+        // where the previous trading day isn't literally yesterday.
+        let day_change_pct = if let Some(current) = ltp {
+            let today = chrono::Utc::now().date_naive();
+            let window_start = today - chrono::Duration::days(10);
+            let series = state
+                .prices
+                .daily_series(h.instrument_id, window_start, today)
+                .await
+                .map_err(|e| e.to_string())?;
+            // series is ordered by date ascending; the previous close is
+            // the last entry strictly before today, if one exists.
+            series
+                .iter()
+                .rev()
+                .find(|(date, _)| *date < today)
+                .and_then(|(_, prev_close)| {
+                    if prev_close.is_zero() {
+                        None
+                    } else {
+                        // round_dp(6): same lesson as the avg_cost bug —
+                        // an un-rounded Decimal division can produce a
+                        // 20+ digit repeating decimal; 6 dp is far more
+                        // precision than a percentage display needs.
+                        let pct = ((current - *prev_close) / *prev_close).round_dp(6);
+                        pct.to_string().parse::<f64>().ok()
+                    }
+                })
+        } else {
+            None
+        };
+
         views.push(HoldingView {
             symbol: instrument.symbol,
             sector: instrument.sector,
@@ -199,18 +241,83 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Resu
             last_price: ltp.map(|p| p.to_string()),
             market_value: ltp.map(|p| h.market_value(p).to_string()),
             unrealized_pnl: ltp.map(|p| h.unrealized_pnl(p).to_string()),
+            day_change_pct,
         });
     }
     Ok(views)
 }
 
+#[derive(Serialize)]
+struct RefreshPricesResult {
+    updated: Vec<String>,
+    failed: Vec<RefreshFailure>,
+}
+
+#[derive(Serialize)]
+struct RefreshFailure {
+    symbol: String,
+    reason: String,
+}
+
+/// Pulls a fresh price for every instrument currently held in this
+/// portfolio via the (unofficial, unsupported — see market_data/mod.rs)
+/// Yahoo Finance endpoint. Deliberately continues past individual failures
+/// rather than aborting the whole refresh — one delisted or mistyped
+/// symbol shouldn't block updating the rest of the portfolio. Both the
+/// successes and failures are reported back so the UI can show exactly
+/// what did and didn't update, rather than a single opaque pass/fail.
 #[tauri::command]
-async fn record_buy(
-    state: State<'_, AppState>,
+async fn refresh_prices(state: State<'_, AppState>, portfolio_id: String) -> Result<RefreshPricesResult, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let holdings = state
+        .holdings
+        .list_for_portfolio(portfolio_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut updated = Vec::new();
+    let mut failed = Vec::new();
+    let today = chrono::Utc::now().date_naive();
+
+    for h in holdings {
+        let instrument = match state.instruments.get(h.instrument_id).await {
+            Ok(i) => i,
+            Err(e) => {
+                failed.push(RefreshFailure { symbol: h.instrument_id.to_string(), reason: e.to_string() });
+                continue;
+            }
+        };
+        let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
+
+        match state.market_data.fetch_latest_price(&yahoo_symbol).await {
+            Ok(price) => {
+                if let Err(e) = state.prices.upsert_daily_bar(h.instrument_id, today, price).await {
+                    failed.push(RefreshFailure { symbol: instrument.symbol, reason: e.to_string() });
+                } else {
+                    updated.push(instrument.symbol);
+                }
+            }
+            Err(e) => {
+                failed.push(RefreshFailure { symbol: instrument.symbol, reason: e.to_string() });
+            }
+        }
+    }
+
+    Ok(RefreshPricesResult { updated, failed })
+}
+
+/// Shared by record_buy and record_sell — both are "look up the instrument,
+/// build a Transaction, run it through RecordTransactionUseCase" with only
+/// the TransactionType differing. Kept as one function rather than two
+/// near-identical copies after several bugs earlier in this project came
+/// from exactly that kind of duplication drifting apart.
+async fn record_transaction_of_type(
+    state: &State<'_, AppState>,
     portfolio_id: String,
     symbol: String,
     quantity: String,
     price: String,
+    transaction_type: TransactionType,
 ) -> Result<(), String> {
     let portfolio_id = parse_portfolio_id(&portfolio_id)?;
     let instrument = state
@@ -224,7 +331,7 @@ async fn record_buy(
         id: Uuid::new_v4(),
         portfolio_id,
         instrument_id: instrument.id,
-        transaction_type: TransactionType::Buy,
+        transaction_type,
         quantity: Decimal::from_str(&quantity).map_err(|e| e.to_string())?,
         price: Money::inr(Decimal::from_str(&price).map_err(|e| e.to_string())?),
         fees: Money::inr(Decimal::from_str("20").unwrap()),
@@ -234,8 +341,34 @@ async fn record_buy(
     };
 
     let use_case = RecordTransactionUseCase::new(state.transactions.clone(), state.holdings.clone());
+    // A sell that overdraws the position is rejected here — before it ever
+    // reaches the ledger — by RecordTransactionUseCase's own validate-then-
+    // persist ordering (see the bug fix noted in the README under
+    // "A real bug I found and fixed").
     use_case.execute(txn).await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+async fn record_buy(
+    state: State<'_, AppState>,
+    portfolio_id: String,
+    symbol: String,
+    quantity: String,
+    price: String,
+) -> Result<(), String> {
+    record_transaction_of_type(&state, portfolio_id, symbol, quantity, price, TransactionType::Buy).await
+}
+
+#[tauri::command]
+async fn record_sell(
+    state: State<'_, AppState>,
+    portfolio_id: String,
+    symbol: String,
+    quantity: String,
+    price: String,
+) -> Result<(), String> {
+    record_transaction_of_type(&state, portfolio_id, symbol, quantity, price, TransactionType::Sell).await
 }
 
 #[tauri::command]
@@ -391,6 +524,7 @@ fn main() {
                 holdings: Arc::new(SqliteHoldingRepository::new(pool.clone())),
                 instruments: Arc::new(SqliteInstrumentRepository::new(pool.clone())),
                 prices: Arc::new(SqlitePriceRepository::new(pool)),
+                market_data: Arc::new(YahooFinanceProvider::new()),
             };
 
             tauri::async_runtime::block_on(seed_demo_data_if_first_launch(&state))
@@ -408,7 +542,9 @@ fn main() {
             add_instrument,
             get_price_history,
             record_buy,
-            compute_xirr_for_symbol
+            record_sell,
+            compute_xirr_for_symbol,
+            refresh_prices
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

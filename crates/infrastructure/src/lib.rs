@@ -7,3 +7,4 @@
 pub mod sqlite;
 pub mod brokers;
 pub mod live_feed;
+pub mod market_data;

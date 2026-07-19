@@ -48,20 +48,52 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
       {error && <p style={{ color: colors.danger }}>{error}</p>}
 
       {summary && (
-        <div style={{ display: "flex", gap: 12, margin: "16px 0" }}>
+        <>
+          <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 8px" }}>
+            Prices shown here are last-refreshed values, not live — use the{" "}
+            <strong>Refresh Prices</strong> button on the Holdings screen to pull fresh ones.
+          </p>
+          <div style={{ display: "flex", gap: 12, margin: "0 0 16px" }}>
           <div style={{ ...cardStyle, minWidth: 160 }}>
             <div style={{ fontSize: 12, color: colors.textMuted }}>Net worth</div>
             <div style={{ fontSize: 18, fontWeight: 600 }}>₹{summary.net_worth}</div>
           </div>
           <div style={{ ...cardStyle, minWidth: 160 }}>
             <div style={{ fontSize: 12, color: colors.textMuted }}>Unrealized P/L</div>
-            <div style={{ fontSize: 18, fontWeight: 600 }}>₹{summary.overall_unrealized_pnl}</div>
+            <div
+              style={{
+                fontSize: 18,
+                fontWeight: 600,
+                color:
+                  parseFloat(summary.overall_unrealized_pnl) > 0
+                    ? colors.success
+                    : parseFloat(summary.overall_unrealized_pnl) < 0
+                    ? colors.danger
+                    : undefined,
+              }}
+            >
+              ₹{summary.overall_unrealized_pnl}
+            </div>
           </div>
           <div style={{ ...cardStyle, minWidth: 160 }}>
             <div style={{ fontSize: 12, color: colors.textMuted }}>Realized P/L</div>
-            <div style={{ fontSize: 18, fontWeight: 600 }}>₹{summary.overall_realized_pnl}</div>
+            <div
+              style={{
+                fontSize: 18,
+                fontWeight: 600,
+                color:
+                  parseFloat(summary.overall_realized_pnl) > 0
+                    ? colors.success
+                    : parseFloat(summary.overall_realized_pnl) < 0
+                    ? colors.danger
+                    : undefined,
+              }}
+            >
+              ₹{summary.overall_realized_pnl}
+            </div>
           </div>
         </div>
+        </>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 12, marginTop: 8 }}>

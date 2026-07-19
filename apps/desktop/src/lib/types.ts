@@ -25,6 +25,7 @@ export interface HoldingView {
   last_price: string | null;
   market_value: string | null;
   unrealized_pnl: string | null;
+  day_change_pct: number | null;
 }
 
 export interface InstrumentView {
@@ -35,6 +36,16 @@ export interface InstrumentView {
 export interface PriceHistoryPoint {
   date: string;
   close: string;
+}
+
+export interface RefreshFailure {
+  symbol: string;
+  reason: string;
+}
+
+export interface RefreshPricesResult {
+  updated: string[];
+  failed: RefreshFailure[];
 }
 
 export type ScreenId = "dashboard" | "holdings" | "chart" | "settings";

@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DashboardSummary, HoldingView, InstrumentView, PortfolioView, PriceHistoryPoint } from "./types";
+import type {
+  DashboardSummary,
+  HoldingView,
+  InstrumentView,
+  PortfolioView,
+  PriceHistoryPoint,
+  RefreshPricesResult,
+} from "./types";
 
 // One function per backend command, typed — callers never touch the raw
 // `invoke` string-based API directly. Keeping this list in sync with the
@@ -14,8 +21,15 @@ export const api = {
   listHoldings: (portfolioId: string) => invoke<HoldingView[]>("list_holdings", { portfolioId }),
   recordBuy: (portfolioId: string, symbol: string, quantity: string, price: string) =>
     invoke<void>("record_buy", { portfolioId, symbol, quantity, price }),
+  recordSell: (portfolioId: string, symbol: string, quantity: string, price: string) =>
+    invoke<void>("record_sell", { portfolioId, symbol, quantity, price }),
   computeXirrForSymbol: (portfolioId: string, symbol: string) =>
     invoke<number>("compute_xirr_for_symbol", { portfolioId, symbol }),
+  // Unofficial Yahoo Finance pull — see the honesty note in
+  // crates/infrastructure/src/market_data/mod.rs. Can fail per-symbol
+  // without failing the whole refresh; check `.failed` on the result.
+  refreshPrices: (portfolioId: string) =>
+    invoke<RefreshPricesResult>("refresh_prices", { portfolioId }),
 
   // Instruments and prices are shared reference data, not portfolio-scoped.
   listInstruments: () => invoke<InstrumentView[]>("list_instruments"),
