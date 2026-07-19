@@ -48,4 +48,45 @@ export interface RefreshPricesResult {
   failed: RefreshFailure[];
 }
 
-export type ScreenId = "dashboard" | "holdings" | "chart" | "settings";
+export interface MarketSnapshotView {
+  symbol: string;
+  price: string;
+  day_high: string | null;
+  day_low: string | null;
+  week52_high: string | null;
+  week52_low: string | null;
+  volume: number | null;
+}
+
+export interface TechnicalAnalysisView {
+  phase: string;
+  latest_close: number;
+  sma_10: number | null;
+  sma_20: number | null;
+  sma_50: number | null;
+  rsi_14: number | null;
+  annualized_return_pct: number | null;
+  annualized_volatility_pct: number | null;
+  historical_var_95_pct: number | null;
+}
+
+export interface StockRiskReturn {
+  symbol: string;
+  annualized_return_pct: number;
+  annualized_volatility_pct: number;
+  risk_label: string;
+}
+
+export interface CorrelationPair {
+  symbol_a: string;
+  symbol_b: string;
+  correlation: number;
+}
+
+export interface PortfolioAnalysisView {
+  stocks: StockRiskReturn[];
+  correlations: CorrelationPair[];
+  skipped: RefreshFailure[];
+}
+
+export type ScreenId = "dashboard" | "holdings" | "watchlist" | "analysis" | "chart" | "settings";

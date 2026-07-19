@@ -289,9 +289,9 @@ async fn refresh_prices(state: State<'_, AppState>, portfolio_id: String) -> Res
         };
         let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
 
-        match state.market_data.fetch_latest_price(&yahoo_symbol).await {
-            Ok(price) => {
-                if let Err(e) = state.prices.upsert_daily_bar(h.instrument_id, today, price).await {
+        match state.market_data.fetch_quote(&yahoo_symbol).await {
+            Ok(quote) => {
+                if let Err(e) = state.prices.upsert_daily_bar(h.instrument_id, today, quote.price).await {
                     failed.push(RefreshFailure { symbol: instrument.symbol, reason: e.to_string() });
                 } else {
                     updated.push(instrument.symbol);
@@ -304,6 +304,234 @@ async fn refresh_prices(state: State<'_, AppState>, portfolio_id: String) -> Res
     }
 
     Ok(RefreshPricesResult { updated, failed })
+}
+
+#[derive(Serialize)]
+struct MarketSnapshotView {
+    symbol: String,
+    price: String,
+    day_high: Option<String>,
+    day_low: Option<String>,
+    week52_high: Option<String>,
+    week52_low: Option<String>,
+    volume: Option<u64>,
+}
+
+/// Live quote for any tracked instrument, regardless of whether it's
+/// actually held in any portfolio — this is what makes it possible to add
+/// a ticker and watch it before ever buying (no portfolio_id needed here at
+/// all, deliberately, since watching isn't owning).
+#[tauri::command]
+async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Result<MarketSnapshotView, String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+    let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
+    let quote = state.market_data.fetch_quote(&yahoo_symbol).await.map_err(|e| e.to_string())?;
+
+    Ok(MarketSnapshotView {
+        symbol: instrument.symbol,
+        price: quote.price.to_string(),
+        day_high: quote.day_high.map(|d| d.to_string()),
+        day_low: quote.day_low.map(|d| d.to_string()),
+        week52_high: quote.week52_high.map(|d| d.to_string()),
+        week52_low: quote.week52_low.map(|d| d.to_string()),
+        volume: quote.volume,
+    })
+}
+
+#[derive(Serialize)]
+struct TechnicalAnalysisView {
+    phase: String,
+    latest_close: f64,
+    sma_10: Option<f64>,
+    sma_20: Option<f64>,
+    sma_50: Option<f64>,
+    rsi_14: Option<f64>,
+    annualized_return_pct: Option<f64>,
+    annualized_volatility_pct: Option<f64>,
+    /// Historical VaR at 95% confidence, as a fraction (e.g. -0.045 = a
+    /// possible 4.5% one-day loss) — see the honesty/methodology note in
+    /// crates/domain/src/analytics/portfolio_stats.rs.
+    historical_var_95_pct: Option<f64>,
+}
+
+/// One combined technical read on a stock: market phase, moving averages,
+/// RSI, and risk/return stats — all computed from a single fetched year of
+/// daily history rather than one call per statistic, since that history
+/// fetch is the expensive part (this is why it's a manual per-row action,
+/// not part of auto-refresh — see get_market_snapshot for the cheap
+/// same-day quote used there instead).
+#[tauri::command]
+async fn analyze_market_phase(state: State<'_, AppState>, symbol: String) -> Result<TechnicalAnalysisView, String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+    let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
+    let bars = state
+        .market_data
+        .fetch_daily_history_1y(&yahoo_symbol)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let phase = pm_domain::analytics::classify_market_phase(&bars);
+    let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
+    let latest_close = closes.last().copied().unwrap_or(0.0);
+
+    let last_of = |series: Vec<Option<f64>>| series.last().copied().flatten();
+    let sma_10 = last_of(pm_domain::analytics::sma_series(&closes, 10));
+    let sma_20 = last_of(pm_domain::analytics::sma_series(&closes, 20));
+    let sma_50 = last_of(pm_domain::analytics::sma_series(&closes, 50));
+    let rsi_14 = last_of(pm_domain::analytics::rsi(&closes, 14));
+
+    let returns = pm_domain::analytics::daily_returns(&closes);
+    let (annualized_return_pct, annualized_volatility_pct, historical_var_95_pct) = if returns.len() >= 2 {
+        (
+            Some(pm_domain::analytics::annualized_return(&returns) * 100.0),
+            Some(pm_domain::analytics::annualized_volatility(&returns) * 100.0),
+            pm_domain::analytics::historical_var(&returns, 0.95).map(|v| v * 100.0),
+        )
+    } else {
+        (None, None, None)
+    };
+
+    Ok(TechnicalAnalysisView {
+        phase: phase.label().to_string(),
+        latest_close,
+        sma_10,
+        sma_20,
+        sma_50,
+        rsi_14,
+        annualized_return_pct,
+        annualized_volatility_pct,
+        historical_var_95_pct,
+    })
+}
+
+#[derive(Serialize)]
+struct StockRiskReturn {
+    symbol: String,
+    annualized_return_pct: f64,
+    annualized_volatility_pct: f64,
+    /// Plain-language quadrant label matching the reference article's own
+    /// framing ("High Risk Low Return" etc.) — computed by comparing each
+    /// stock against the *median* return/volatility of the other held
+    /// stocks being analyzed together, so the label is relative to this
+    /// portfolio, not some universal fixed threshold that wouldn't mean
+    /// much on its own.
+    risk_label: String,
+}
+
+#[derive(Serialize)]
+struct CorrelationPair {
+    symbol_a: String,
+    symbol_b: String,
+    correlation: f64,
+}
+
+#[derive(Serialize)]
+struct PortfolioAnalysisView {
+    stocks: Vec<StockRiskReturn>,
+    correlations: Vec<CorrelationPair>,
+    /// Symbols where a 1-year history fetch failed (delisted, rate-limited,
+    /// etc.) — excluded from the stats above rather than silently dropped
+    /// with no explanation.
+    skipped: Vec<RefreshFailure>,
+}
+
+fn median(mut values: Vec<f64>) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[mid - 1] + values[mid]) / 2.0
+    } else {
+        values[mid]
+    }
+}
+
+/// Portfolio-level "understand my holdings" analysis, directly modeled on
+/// the reference article's risk/return comparison and correlation matrix
+/// sections: for every held stock, a year of daily history is fetched
+/// (same heavier call as analyze_market_phase — this is a deliberate,
+/// on-demand action, not something that runs automatically), and from that
+/// this computes annualized return/volatility per stock plus the pairwise
+/// Pearson correlation of daily returns across all of them.
+#[tauri::command]
+async fn get_portfolio_analysis(state: State<'_, AppState>, portfolio_id: String) -> Result<PortfolioAnalysisView, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let holdings = state.holdings.list_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())?;
+
+    let mut symbol_returns: Vec<(String, Vec<f64>)> = Vec::new();
+    let mut skipped = Vec::new();
+
+    for h in holdings {
+        let instrument = match state.instruments.get(h.instrument_id).await {
+            Ok(i) => i,
+            Err(e) => {
+                skipped.push(RefreshFailure { symbol: h.instrument_id.to_string(), reason: e.to_string() });
+                continue;
+            }
+        };
+        let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
+        match state.market_data.fetch_daily_history_1y(&yahoo_symbol).await {
+            Ok(bars) => {
+                let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
+                let returns = pm_domain::analytics::daily_returns(&closes);
+                if returns.len() >= 2 {
+                    symbol_returns.push((instrument.symbol, returns));
+                } else {
+                    skipped.push(RefreshFailure { symbol: instrument.symbol, reason: "not enough history yet".to_string() });
+                }
+            }
+            Err(e) => skipped.push(RefreshFailure { symbol: instrument.symbol, reason: e.to_string() }),
+        }
+    }
+
+    let ann_returns: Vec<f64> = symbol_returns.iter().map(|(_, r)| pm_domain::analytics::annualized_return(r) * 100.0).collect();
+    let ann_vols: Vec<f64> = symbol_returns.iter().map(|(_, r)| pm_domain::analytics::annualized_volatility(r) * 100.0).collect();
+    let median_return = median(ann_returns.clone());
+    let median_vol = median(ann_vols.clone());
+
+    let stocks: Vec<StockRiskReturn> = symbol_returns
+        .iter()
+        .enumerate()
+        .map(|(i, (symbol, _))| {
+            let ret = ann_returns[i];
+            let vol = ann_vols[i];
+            let risk_word = if vol > median_vol { "High Risk" } else { "Low Risk" };
+            let return_word = if ret > median_return { "High Return" } else { "Low Return" };
+            StockRiskReturn {
+                symbol: symbol.clone(),
+                annualized_return_pct: ret,
+                annualized_volatility_pct: vol,
+                risk_label: format!("{risk_word}, {return_word}"),
+            }
+        })
+        .collect();
+
+    let mut correlations = Vec::new();
+    for i in 0..symbol_returns.len() {
+        for j in (i + 1)..symbol_returns.len() {
+            if let Some(corr) = pm_domain::analytics::pearson_correlation(&symbol_returns[i].1, &symbol_returns[j].1) {
+                correlations.push(CorrelationPair {
+                    symbol_a: symbol_returns[i].0.clone(),
+                    symbol_b: symbol_returns[j].0.clone(),
+                    correlation: corr,
+                });
+            }
+        }
+    }
+
+    Ok(PortfolioAnalysisView { stocks, correlations, skipped })
 }
 
 /// Shared by record_buy and record_sell — both are "look up the instrument,
@@ -544,7 +772,10 @@ fn main() {
             record_buy,
             record_sell,
             compute_xirr_for_symbol,
-            refresh_prices
+            refresh_prices,
+            get_market_snapshot,
+            analyze_market_phase,
+            get_portfolio_analysis
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

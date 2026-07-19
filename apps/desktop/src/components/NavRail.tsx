@@ -4,6 +4,8 @@ import { colors } from "../lib/theme";
 const ITEMS: { id: ScreenId; label: string; glyph: string }[] = [
   { id: "dashboard", label: "Dashboard", glyph: "\u2302" },
   { id: "holdings", label: "Holdings", glyph: "\u2261" },
+  { id: "watchlist", label: "Watchlist", glyph: "\u2606" },
+  { id: "analysis", label: "Analysis", glyph: "\u03A3" },
   { id: "chart", label: "Chart", glyph: "\u2197" },
   { id: "settings", label: "Settings", glyph: "\u2699" },
 ];

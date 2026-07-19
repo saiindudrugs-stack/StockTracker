@@ -3,6 +3,8 @@ import { NavRail } from "./components/NavRail";
 import { PortfolioTabs } from "./components/PortfolioTabs";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { HoldingsScreen } from "./screens/HoldingsScreen";
+import { WatchlistScreen } from "./screens/WatchlistScreen";
+import { AnalysisScreen } from "./screens/AnalysisScreen";
 import { ChartScreen } from "./screens/ChartScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { api } from "./lib/tauri";
@@ -44,6 +46,12 @@ export default function App() {
     }
   }
 
+  // Watchlist/Chart/Settings are deliberately portfolio-agnostic — tracking
+  // a ticker before buying shouldn't require setting up a family portfolio
+  // first. Dashboard, Holdings, and Analysis need an active portfolio_id
+  // since all three are about *owned* positions.
+  const needsPortfolio = screen === "dashboard" || screen === "holdings" || screen === "analysis";
+
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", display: "flex", height: "100vh" }}>
       <NavRail active={screen} onSelect={setScreen} />
@@ -56,14 +64,16 @@ export default function App() {
         />
         <div style={{ flex: 1, overflow: "auto" }}>
           {error && <p style={{ color: colors.danger, padding: "8px 24px 0" }}>{error}</p>}
-          {!activePortfolioId ? (
+          {needsPortfolio && !activePortfolioId ? (
             <p style={{ padding: 24, color: colors.textMuted, fontSize: 13 }}>
               No portfolio selected yet — click "+ Add portfolio" above to create one.
             </p>
           ) : (
             <>
-              {screen === "dashboard" && <DashboardScreen portfolioId={activePortfolioId} />}
-              {screen === "holdings" && <HoldingsScreen portfolioId={activePortfolioId} />}
+              {screen === "dashboard" && activePortfolioId && <DashboardScreen portfolioId={activePortfolioId} />}
+              {screen === "holdings" && activePortfolioId && <HoldingsScreen portfolioId={activePortfolioId} />}
+              {screen === "watchlist" && <WatchlistScreen />}
+              {screen === "analysis" && activePortfolioId && <AnalysisScreen portfolioId={activePortfolioId} />}
               {screen === "chart" && <ChartScreen />}
               {screen === "settings" && <SettingsScreen />}
             </>

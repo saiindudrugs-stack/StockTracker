@@ -21,3 +21,18 @@ export const panelStyle: CSSProperties = {
   borderRadius: 8,
   padding: 16,
 };
+
+export function phaseColor(phase: string): string {
+  switch (phase) {
+    case "Markup":
+      return colors.success;
+    case "Accumulation":
+      return "#3D8B5F"; // softer green — building, not yet confirmed uptrend
+    case "Markdown":
+      return colors.danger;
+    case "Distribution":
+      return "#C77B4A"; // amber-orange — softer warning, not yet confirmed downtrend
+    default:
+      return colors.textMuted; // Insufficient data
+  }
+}

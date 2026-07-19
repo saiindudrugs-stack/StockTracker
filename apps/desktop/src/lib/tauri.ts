@@ -3,9 +3,12 @@ import type {
   DashboardSummary,
   HoldingView,
   InstrumentView,
+  MarketSnapshotView,
+  PortfolioAnalysisView,
   PortfolioView,
   PriceHistoryPoint,
   RefreshPricesResult,
+  TechnicalAnalysisView,
 } from "./types";
 
 // One function per backend command, typed — callers never touch the raw
@@ -35,4 +38,15 @@ export const api = {
   listInstruments: () => invoke<InstrumentView[]>("list_instruments"),
   addInstrument: (symbol: string) => invoke<InstrumentView>("add_instrument", { symbol }),
   getPriceHistory: (symbol: string) => invoke<PriceHistoryPoint[]>("get_price_history", { symbol }),
+
+  // Works for ANY tracked instrument, held or not — this is what makes a
+  // watchlist (tracking before buying) possible without a portfolio_id.
+  getMarketSnapshot: (symbol: string) => invoke<MarketSnapshotView>("get_market_snapshot", { symbol }),
+  // Heavier call (needs a year of daily history) — trigger on demand, not
+  // on every auto-refresh tick.
+  analyzeMarketPhase: (symbol: string) => invoke<TechnicalAnalysisView>("analyze_market_phase", { symbol }),
+  // Same heavier-call caveat as above, run once per held stock — a
+  // deliberate "run my analysis" action, not automatic.
+  getPortfolioAnalysis: (portfolioId: string) =>
+    invoke<PortfolioAnalysisView>("get_portfolio_analysis", { portfolioId }),
 };
