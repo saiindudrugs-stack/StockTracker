@@ -68,6 +68,30 @@ impl SqlitePool {
         .map_err(|e| pm_domain::repositories::RepositoryError::Storage(format!("task join error: {e}")))?
         .map_err(|e| pm_domain::repositories::RepositoryError::Storage(e.to_string()))
     }
+
+    /// Deletes every row from every table — used for the Settings screen's
+    /// "Reset All Data" action. Deliberately does NOT drop/recreate tables
+    /// (schema stays intact, just empty) so the app doesn't need to
+    /// re-run migrations afterward. This exists because reinstalling the
+    /// app does NOT clear this database — app data directories
+    /// (~/Library/Application Support/... on Mac, %APPDATA%\... on
+    /// Windows) persist independently of the installed application, which
+    /// is standard OS behavior, not a bug — uninstalling/reinstalling an
+    /// app is not expected to silently delete a user's data.
+    pub async fn reset_all(&self) -> Result<(), pm_domain::repositories::RepositoryError> {
+        self.with_conn(|conn| {
+            conn.execute_batch(
+                r#"
+                DELETE FROM "transaction";
+                DELETE FROM holding_snapshot;
+                DELETE FROM price_history;
+                DELETE FROM instrument;
+                DELETE FROM portfolio;
+                "#,
+            )
+        })
+        .await
+    }
 }
 
 /// Schema per HLD Section 5.1. `price_history` is included here too as the

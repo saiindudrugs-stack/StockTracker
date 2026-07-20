@@ -46,6 +46,9 @@ impl MarketPhase {
 #[derive(Debug, Clone, Copy)]
 pub struct DailyBar {
     pub date: NaiveDate,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
     pub close: f64,
     pub volume: f64,
 }
@@ -117,6 +120,9 @@ mod tests {
     fn bar(day: i64, close: f64, volume: f64) -> DailyBar {
         DailyBar {
             date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap() + chrono::Duration::days(day),
+            open: close,
+            high: close,
+            low: close,
             close,
             volume,
         }

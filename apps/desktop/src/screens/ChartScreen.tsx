@@ -52,6 +52,8 @@ export function ChartScreen() {
   const [symbol, setSymbol] = useState<string | null>(null);
   const [history, setHistory] = useState<PriceHistoryPoint[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -63,22 +65,47 @@ export function ChartScreen() {
       .catch((e) => setError(String(e)));
   }, []);
 
-  useEffect(() => {
+  async function loadHistory() {
     if (!symbol) return;
-    api.getPriceHistory(symbol).then(setHistory).catch((e) => setError(String(e)));
+    try {
+      setHistory(await api.getPriceHistory(symbol));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  useEffect(() => {
+    loadHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol]);
+
+  async function handleBackfill() {
+    if (!symbol) return;
+    setBackfilling(true);
+    setBackfillMsg(null);
+    try {
+      const result = await api.backfillHistory(symbol);
+      setBackfillMsg(`Downloaded ${result.days_backfilled} real trading days for ${symbol}.`);
+      await loadHistory();
+    } catch (e) {
+      setBackfillMsg(`Backfill failed: ${String(e)}`);
+    } finally {
+      setBackfilling(false);
+    }
+  }
 
   return (
     <div style={{ padding: 24 }}>
       <h1 style={{ fontSize: 20, color: colors.navy, marginBottom: 4 }}>Chart</h1>
       <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0 }}>
-        A daily-close line chart over the seeded 60-day history — real data flowing through
-        DuckDB's SQLite stand-in (see the infrastructure README), not mocked in the frontend.
-        Candlesticks/Heikin Ashi/Renko and indicator overlays (SRS 2.2.4) aren't built yet; this
-        proves the data pipeline works before investing in a fuller charting engine.
+        A daily-close line chart. New tickers auto-backfill a real year of Yahoo Finance history
+        the moment they're added; the two original demo instruments (RELIANCE, TCS) still carry
+        synthetic seed data until you backfill them here. Candlesticks/Heikin Ashi/Renko and
+        overlaid indicators aren't built into this chart yet — see the Watchlist screen's
+        "Analyze" for SMA/RSI numbers on the same underlying data.
       </p>
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
         {instruments.map((inst) => (
           <button
             key={inst.symbol}
@@ -96,7 +123,11 @@ export function ChartScreen() {
             {inst.symbol}
           </button>
         ))}
+        <button onClick={handleBackfill} disabled={!symbol || backfilling}>
+          {backfilling ? "Downloading…" : "Backfill Real 1Y History"}
+        </button>
       </div>
+      {backfillMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>{backfillMsg}</p>}
 
       {error && <p style={{ color: colors.danger }}>{error}</p>}
 

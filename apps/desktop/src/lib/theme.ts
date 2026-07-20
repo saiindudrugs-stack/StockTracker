@@ -22,6 +22,18 @@ export const panelStyle: CSSProperties = {
   padding: 16,
 };
 
+export function recommendationColor(rec: string | null): string {
+  switch (rec) {
+    case "Buy":
+      return colors.success;
+    case "Sell":
+      return colors.danger;
+    case "Hold":
+      return colors.textMuted;
+    default:
+      return colors.textMuted;
+  }
+}
 export function phaseColor(phase: string): string {
   switch (phase) {
     case "Markup":

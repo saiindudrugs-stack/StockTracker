@@ -37,6 +37,10 @@ export const api = {
   // Instruments and prices are shared reference data, not portfolio-scoped.
   listInstruments: () => invoke<InstrumentView[]>("list_instruments"),
   addInstrument: (symbol: string) => invoke<InstrumentView>("add_instrument", { symbol }),
+  // Downloads a real year of Yahoo daily history into local storage —
+  // needed because a freshly-added ticker (or the two synthetic-seeded
+  // demo instruments) otherwise has little to no real chart data.
+  backfillHistory: (symbol: string) => invoke<{ symbol: string; days_backfilled: number }>("backfill_history", { symbol }),
   getPriceHistory: (symbol: string) => invoke<PriceHistoryPoint[]>("get_price_history", { symbol }),
 
   // Works for ANY tracked instrument, held or not — this is what makes a
@@ -49,4 +53,8 @@ export const api = {
   // deliberate "run my analysis" action, not automatic.
   getPortfolioAnalysis: (portfolioId: string) =>
     invoke<PortfolioAnalysisView>("get_portfolio_analysis", { portfolioId }),
+
+  // Danger zone — wipes every portfolio, holding, transaction, and cached
+  // price. Backed by reset_all_data in main.rs.
+  resetAllData: () => invoke<void>("reset_all_data"),
 };

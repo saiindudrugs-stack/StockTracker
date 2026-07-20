@@ -34,6 +34,7 @@ use tauri::{Manager, State};
 use uuid::Uuid;
 
 struct AppState {
+    pool: SqlitePool,
     portfolios: Arc<SqlitePortfolioRepository>,
     transactions: Arc<SqliteTransactionRepository>,
     holdings: Arc<SqliteHoldingRepository>,
@@ -145,6 +146,50 @@ async fn add_instrument(state: State<'_, AppState>, symbol: String) -> Result<In
     };
     state.instruments.upsert(&instrument).await.map_err(|e| e.to_string())?;
     Ok(InstrumentView { symbol: instrument.symbol, sector: instrument.sector })
+}
+
+#[derive(Serialize)]
+struct BackfillResult {
+    symbol: String,
+    days_backfilled: usize,
+}
+
+/// Downloads a full year of daily closes from Yahoo Finance and persists
+/// them into the local price_history store — this is what makes the Chart
+/// screen actually show a real year of history instead of either nothing
+/// (a freshly-added ticker) or the synthetic demo random-walk (the two
+/// seeded instruments). Called automatically by the frontend right after
+/// a ticker is added, and available as a manual re-run too (e.g. to
+/// replace RELIANCE/TCS's synthetic seed data with the real thing).
+///
+/// Deliberately a separate command from add_instrument rather than baked
+/// into it — instrument creation should succeed even if this network call
+/// fails or the user is offline, and coupling them would make adding a
+/// ticker silently depend on Yahoo being reachable.
+#[tauri::command]
+async fn backfill_history(state: State<'_, AppState>, symbol: String) -> Result<BackfillResult, String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+    let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
+    let bars = state
+        .market_data
+        .fetch_daily_history_1y(&yahoo_symbol)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for bar in &bars {
+        state
+            .prices
+            .upsert_daily_bar(instrument.id, bar.date, Decimal::from_str(&bar.close.to_string()).map_err(|e| e.to_string())?)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(BackfillResult { symbol: instrument.symbol, days_backfilled: bars.len() })
 }
 
 #[tauri::command]
@@ -357,6 +402,15 @@ struct TechnicalAnalysisView {
     /// possible 4.5% one-day loss) — see the honesty/methodology note in
     /// crates/domain/src/analytics/portfolio_stats.rs.
     historical_var_95_pct: Option<f64>,
+    /// Buy/Sell/Hold from the Fibonacci-retracement confluence check (see
+    /// crates/domain/src/analytics/signal.rs for the full methodology and
+    /// honesty note). This is a rule-based technical heuristic, not
+    /// financial advice — `recommendation_reasons` lists exactly why it
+    /// fired so it's auditable, never a black box.
+    recommendation: Option<String>,
+    recommendation_reasons: Vec<String>,
+    nearest_fib_label: Option<String>,
+    nearest_fib_price: Option<f64>,
 }
 
 /// One combined technical read on a stock: market phase, moving averages,
@@ -401,6 +455,17 @@ async fn analyze_market_phase(state: State<'_, AppState>, symbol: String) -> Res
         (None, None, None)
     };
 
+    let signal = pm_domain::analytics::generate_signal(&bars, phase, rsi_14);
+    let (recommendation, recommendation_reasons, nearest_fib_label, nearest_fib_price) = match signal {
+        Some(s) => (
+            Some(s.recommendation.label().to_string()),
+            s.reasons,
+            s.nearest_fib_level.as_ref().map(|l| l.label.to_string()),
+            s.nearest_fib_level.as_ref().map(|l| l.price),
+        ),
+        None => (None, vec!["Not enough history yet for a reliable read (needs 50+ trading days)".to_string()], None, None),
+    };
+
     Ok(TechnicalAnalysisView {
         phase: phase.label().to_string(),
         latest_close,
@@ -411,6 +476,10 @@ async fn analyze_market_phase(state: State<'_, AppState>, symbol: String) -> Res
         annualized_return_pct,
         annualized_volatility_pct,
         historical_var_95_pct,
+        recommendation,
+        recommendation_reasons,
+        nearest_fib_label,
+        nearest_fib_price,
     })
 }
 
@@ -532,6 +601,17 @@ async fn get_portfolio_analysis(state: State<'_, AppState>, portfolio_id: String
     }
 
     Ok(PortfolioAnalysisView { stocks, correlations, skipped })
+}
+
+/// Wipes every portfolio, holding, transaction, instrument, and cached
+/// price from the local database — irreversible, and there's no
+/// confirmation dialog on the Rust side, so the frontend MUST confirm with
+/// the user before calling this (see SettingsScreen.tsx's "Danger Zone").
+/// This exists specifically because reinstalling the app does not clear
+/// local data — see the doc comment on SqlitePool::reset_all for why.
+#[tauri::command]
+async fn reset_all_data(state: State<'_, AppState>) -> Result<(), String> {
+    state.pool.reset_all().await.map_err(|e| e.to_string())
 }
 
 /// Shared by record_buy and record_sell — both are "look up the instrument,
@@ -747,6 +827,7 @@ fn main() {
             let pool = SqlitePool::open(db_path.to_str().unwrap()).expect("failed to open local database");
 
             let state = AppState {
+                pool: pool.clone(),
                 portfolios: Arc::new(SqlitePortfolioRepository::new(pool.clone())),
                 transactions: Arc::new(SqliteTransactionRepository::new(pool.clone())),
                 holdings: Arc::new(SqliteHoldingRepository::new(pool.clone())),
@@ -768,6 +849,7 @@ fn main() {
             list_holdings,
             list_instruments,
             add_instrument,
+            backfill_history,
             get_price_history,
             record_buy,
             record_sell,
@@ -775,7 +857,8 @@ fn main() {
             refresh_prices,
             get_market_snapshot,
             analyze_market_phase,
-            get_portfolio_analysis
+            get_portfolio_analysis,
+            reset_all_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

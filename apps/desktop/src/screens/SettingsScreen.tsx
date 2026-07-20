@@ -1,41 +1,34 @@
 import { useState } from "react";
+import { api } from "../lib/tauri";
 import { colors, panelStyle } from "../lib/theme";
-
-const DEFAULT_BROKER_ORDER = [
-  "Zerodha (live)",
-  "Upstox",
-  "FYERS",
-  "Angel One",
-  "Kotak Neo",
-  "Dhan",
-  "Groww",
-  "ICICI Direct",
-  "Motilal Oswal",
-  "Interactive Brokers",
-];
 
 export function SettingsScreen() {
   const [aiEnabled, setAiEnabled] = useState(true);
   const [aiMode, setAiMode] = useState<"local" | "cloud">("local");
-  const [brokerOrder, setBrokerOrder] = useState(DEFAULT_BROKER_ORDER);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetMessage, setResetMessage] = useState<string | null>(null);
 
-  function move(index: number, direction: -1 | 1) {
-    const next = [...brokerOrder];
-    const target = index + direction;
-    if (target < 0 || target >= next.length || index === 0) return; // Zerodha (live) pinned at #1
-    if (target === 0) return;
-    [next[index], next[target]] = [next[target], next[index]];
-    setBrokerOrder(next);
+  async function handleReset() {
+    setResetting(true);
+    setResetMessage(null);
+    try {
+      await api.resetAllData();
+      setResetMessage("Done — every portfolio, holding, transaction, and cached price has been cleared. Restart the app to see a clean slate.");
+      setConfirmingReset(false);
+    } catch (e) {
+      setResetMessage(`Reset failed: ${String(e)}`);
+    } finally {
+      setResetting(false);
+    }
   }
 
   return (
     <div style={{ padding: 24 }}>
       <h1 style={{ fontSize: 20, color: colors.navy, marginBottom: 4 }}>Settings</h1>
       <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0 }}>
-        This screen's controls are real UI state but aren't wired to backend persistence yet in
-        this slice — they'll reset on restart. Persisting them is a small follow-up (a settings
-        table or JSON file), deliberately left out so this slice's engineering effort went toward
-        the Portfolio Engine / Zerodha adapter / Live Feed Manager instead.
+        The AI toggle below is real UI state but isn't wired to backend persistence yet — it'll
+        reset on restart.
       </p>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
@@ -130,42 +123,46 @@ export function SettingsScreen() {
         )}
       </div>
 
-      <div style={panelStyle}>
-        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Broker rollout priority</p>
-        <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 10px" }}>
-          Reorderable list, kept as a simple config rather than a full drag-and-drop UI until more
-          than a couple of adapters are actually live.
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Price data source</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: 0 }}>
+          Yahoo Finance (unofficial endpoint) — the sole live price source right now. The
+          Zerodha/broker rollout plan from earlier in this project is on hold in favor of this
+          simpler, no-subscription-required approach; the Zerodha adapter code still exists in
+          the Rust engine (crates/infrastructure/src/brokers/zerodha.rs) but nothing in the UI
+          calls it anymore.
         </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {brokerOrder.map((broker, i) => (
-            <div
-              key={broker}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                fontSize: 12,
-                padding: "5px 10px",
-                background: i === 0 ? colors.surface : "transparent",
-                borderRadius: 4,
-              }}
-            >
-              <span>
-                {i + 1}. {broker}
-              </span>
-              {i !== 0 && (
-                <span style={{ display: "flex", gap: 4 }}>
-                  <button onClick={() => move(i, -1)} disabled={i <= 1} style={{ fontSize: 10 }}>
-                    ↑
-                  </button>
-                  <button onClick={() => move(i, 1)} disabled={i === brokerOrder.length - 1} style={{ fontSize: 10 }}>
-                    ↓
-                  </button>
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
+      </div>
+
+      <div style={{ ...panelStyle, borderColor: colors.danger }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px", color: colors.danger }}>
+          Danger Zone
+        </p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
+          Reinstalling the app does NOT clear this data — your portfolios, holdings, and cached
+          prices live in a database file in your OS's app-data folder, completely separate from
+          the installed application. That's standard, expected behavior on every OS, not a bug.
+          Use this button if you want to wipe everything and start clean (e.g. after test data).
+        </p>
+        {!confirmingReset ? (
+          <button onClick={() => setConfirmingReset(true)} style={{ color: colors.danger }}>
+            Reset All Data…
+          </button>
+        ) : (
+          <div>
+            <p style={{ fontSize: 12, fontWeight: 600, color: colors.danger, margin: "0 0 8px" }}>
+              This permanently deletes every portfolio, holding, transaction, and cached price.
+              This cannot be undone. Are you sure?
+            </p>
+            <button onClick={handleReset} disabled={resetting} style={{ color: colors.danger, marginRight: 8 }}>
+              {resetting ? "Resetting…" : "Yes, delete everything"}
+            </button>
+            <button onClick={() => setConfirmingReset(false)} disabled={resetting}>
+              Cancel
+            </button>
+          </div>
+        )}
+        {resetMessage && <p style={{ fontSize: 12, marginTop: 10 }}>{resetMessage}</p>}
       </div>
     </div>
   );

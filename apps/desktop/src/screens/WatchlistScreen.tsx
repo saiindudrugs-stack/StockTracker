@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri";
 import type { InstrumentView, MarketSnapshotView, TechnicalAnalysisView } from "../lib/types";
-import { colors, phaseColor } from "../lib/theme";
+import { colors, phaseColor, recommendationColor } from "../lib/theme";
 
 const AUTO_REFRESH_MS = 30_000;
 
@@ -104,6 +104,10 @@ export function WatchlistScreen() {
       await refreshInstruments();
       await refreshSnapshot(added.symbol);
       setError(null);
+      // Fire-and-forget: a fresh ticker has no chart history yet without
+      // this. Not awaited into the main flow — a slow/failed backfill
+      // shouldn't block the ticker from being added and shown.
+      api.backfillHistory(added.symbol).catch((e) => setError(`Backfill for ${added.symbol} failed: ${e}`));
     } catch (e) {
       setError(String(e));
     }
@@ -169,6 +173,7 @@ export function WatchlistScreen() {
             <th>Volume</th>
             <th>RSI(14)</th>
             <th>Phase</th>
+            <th>Signal</th>
           </tr>
         </thead>
         <tbody>
@@ -203,10 +208,19 @@ export function WatchlistScreen() {
                       </button>
                     )}
                   </td>
+                  <td>
+                    {row?.analysis?.recommendation ? (
+                      <span style={{ color: recommendationColor(row.analysis.recommendation), fontWeight: 700 }}>
+                        {row.analysis.recommendation}
+                      </span>
+                    ) : row?.analysis ? (
+                      <span style={{ color: colors.textMuted }}>—</span>
+                    ) : null}
+                  </td>
                 </tr>
                 {row?.expanded && row.analysis && (
                   <tr key={`${inst.symbol}-detail`} style={{ background: colors.surface }}>
-                    <td colSpan={9} style={{ padding: "8px 12px", fontSize: 12 }}>
+                    <td colSpan={10} style={{ padding: "8px 12px", fontSize: 12 }}>
                       <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
                         <span>SMA(10): <strong>{fmtNum(row.analysis.sma_10)}</strong></span>
                         <span>SMA(20): <strong>{fmtNum(row.analysis.sma_20)}</strong></span>
@@ -218,9 +232,34 @@ export function WatchlistScreen() {
                           <strong style={{ color: colors.danger }}>{fmtPct(row.analysis.historical_var_95_pct)}</strong>
                         </span>
                       </div>
-                      <p style={{ color: colors.textMuted, marginTop: 6, marginBottom: 0 }}>
+                      <p style={{ color: colors.textMuted, marginTop: 6, marginBottom: 12 }}>
                         VaR reads as: 95% confident a single day's loss won't exceed this — a rough
                         risk gauge from the last year of daily moves, not a guarantee.
+                      </p>
+
+                      {row.analysis.nearest_fib_label && (
+                        <p style={{ margin: "0 0 6px" }}>
+                          Nearest Fibonacci level: <strong>{row.analysis.nearest_fib_label}</strong> at{" "}
+                          <strong>{fmtNum(row.analysis.nearest_fib_price)}</strong> (swing high/low from the
+                          last year)
+                        </p>
+                      )}
+                      <p style={{ margin: "0 0 4px", fontWeight: 600 }}>
+                        Signal:{" "}
+                        <span style={{ color: recommendationColor(row.analysis.recommendation) }}>
+                          {row.analysis.recommendation ?? "Hold"}
+                        </span>
+                      </p>
+                      <ul style={{ margin: "0 0 6px", paddingLeft: 18 }}>
+                        {row.analysis.recommendation_reasons.map((reason, i) => (
+                          <li key={i}>{reason}</li>
+                        ))}
+                      </ul>
+                      <p style={{ color: colors.textMuted, fontStyle: "italic", margin: 0 }}>
+                        Rules-based technical-analysis heuristic (Fibonacci retracement + trend +
+                        RSI + candlestick confluence) — not financial advice, not backtested, and
+                        no strategy here is foolproof. Treat this as "what a textbook confluence
+                        check found," not "what to do."
                       </p>
                     </td>
                   </tr>
@@ -230,7 +269,7 @@ export function WatchlistScreen() {
           })}
           {instruments.length === 0 && (
             <tr>
-              <td colSpan={9} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
+              <td colSpan={10} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
                 No tickers yet — add one above to start tracking it.
               </td>
             </tr>

@@ -110,6 +110,9 @@ struct YahooIndicators {
 }
 #[derive(Debug, Deserialize)]
 struct YahooQuoteSeries {
+    open: Vec<Option<f64>>,
+    high: Vec<Option<f64>>,
+    low: Vec<Option<f64>>,
     close: Vec<Option<f64>>,
     volume: Vec<Option<f64>>,
 }
@@ -211,9 +214,13 @@ impl MarketDataProvider for YahooFinanceProvider {
         let mut bars = Vec::with_capacity(timestamps.len());
         for i in 0..timestamps.len() {
             // Yahoo pads days with no trade (holidays inside the range
-            // grid) with `null` close/volume — skip those rather than
-            // treat a missing value as a zero, which would corrupt SMA/OBV.
-            let (Some(close), Some(volume)) = (
+            // grid) with `null` for every field — skip those rather than
+            // treat a missing value as a zero, which would corrupt
+            // SMA/OBV/candlestick calculations.
+            let (Some(open), Some(high), Some(low), Some(close), Some(volume)) = (
+                quote_series.open.get(i).copied().flatten(),
+                quote_series.high.get(i).copied().flatten(),
+                quote_series.low.get(i).copied().flatten(),
                 quote_series.close.get(i).copied().flatten(),
                 quote_series.volume.get(i).copied().flatten(),
             ) else {
@@ -222,7 +229,7 @@ impl MarketDataProvider for YahooFinanceProvider {
             let date = DateTime::from_timestamp(timestamps[i], 0)
                 .ok_or_else(|| MarketDataError::UnexpectedResponse(format!("bad timestamp for {symbol}")))?
                 .date_naive();
-            bars.push(DailyBar { date, close, volume });
+            bars.push(DailyBar { date, open, high, low, close, volume });
         }
         Ok(bars)
     }
@@ -294,6 +301,9 @@ mod tests {
                     "timestamp": [1735689600, 1735776000, 1735862400],
                     "indicators": {
                         "quote": [{
+                            "open": [99.0, null, 101.0],
+                            "high": [101.0, null, 103.0],
+                            "low": [98.0, null, 100.0],
                             "close": [100.0, null, 102.0],
                             "volume": [1000.0, null, 1200.0]
                         }]

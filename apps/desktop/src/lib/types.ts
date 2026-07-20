@@ -68,6 +68,13 @@ export interface TechnicalAnalysisView {
   annualized_return_pct: number | null;
   annualized_volatility_pct: number | null;
   historical_var_95_pct: number | null;
+  // Fibonacci-retracement confluence signal — a rules-based technical-
+  // analysis heuristic, not financial advice. See the honesty note in
+  // crates/domain/src/analytics/signal.rs.
+  recommendation: string | null;
+  recommendation_reasons: string[];
+  nearest_fib_label: string | null;
+  nearest_fib_price: number | null;
 }
 
 export interface StockRiskReturn {

@@ -111,6 +111,9 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
       await refreshInstruments();
       setSymbol(added.symbol);
       setError(null);
+      // Fire-and-forget, same reasoning as WatchlistScreen: don't let a
+      // slow/failed backfill block the ticker itself from being usable.
+      api.backfillHistory(added.symbol).catch((e) => setError(`Backfill for ${added.symbol} failed: ${e}`));
     } catch (e) {
       setError(String(e));
     }
