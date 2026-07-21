@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri";
 import type { HoldingView, InstrumentView } from "../lib/types";
 import { colors, panelStyle } from "../lib/theme";
+import { ConfirmButton } from "../components/ConfirmButton";
 
 type Tab = "long_term" | "intraday";
 type TxnType = "buy" | "sell";
@@ -150,9 +151,6 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
   }
 
   async function handleRemoveHolding(sym: string) {
-    if (!window.confirm(`Remove ${sym} from this portfolio? This deletes all its buy/sell transactions here — meant for test cleanup, not a real correction.`)) {
-      return;
-    }
     try {
       await api.removeHolding(portfolioId, sym);
       await refreshHoldings();
@@ -259,13 +257,11 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                       <button onClick={() => handleXirr(h.symbol)} style={{ fontSize: 11 }}>
                         XIRR
                       </button>{" "}
-                      <button
-                        onClick={() => handleRemoveHolding(h.symbol)}
-                        style={{ fontSize: 11, color: colors.danger }}
-                        title="Deletes this stock's transactions in this portfolio only"
-                      >
-                        Remove
-                      </button>
+                      <ConfirmButton
+                        label="Remove"
+                        confirmLabel="Yes, delete"
+                        onConfirm={() => handleRemoveHolding(h.symbol)}
+                      />
                     </td>
                   </tr>
                 );

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri";
 import type { InstrumentView, MarketSnapshotView, TechnicalAnalysisView } from "../lib/types";
 import { colors, phaseColor, recommendationColor } from "../lib/theme";
+import { ConfirmButton } from "../components/ConfirmButton";
 
 const AUTO_REFRESH_MS = 30_000;
 
@@ -96,9 +97,6 @@ export function WatchlistScreen() {
   }
 
   async function handleRemove(symbol: string) {
-    if (!window.confirm(`Stop tracking ${symbol}? This is only blocked if you still hold it somewhere.`)) {
-      return;
-    }
     try {
       await api.removeFromWatchlist(symbol);
       await refreshInstruments();
@@ -240,15 +238,11 @@ export function WatchlistScreen() {
                     ) : null}
                   </td>
                   <td>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRemove(inst.symbol);
-                      }}
-                      style={{ fontSize: 11, color: colors.danger }}
-                    >
-                      Remove
-                    </button>
+                    <ConfirmButton
+                      label="Remove"
+                      confirmLabel="Yes, stop tracking"
+                      onConfirm={() => handleRemove(inst.symbol)}
+                    />
                   </td>
                 </tr>
                 {row?.expanded && row.analysis && (
