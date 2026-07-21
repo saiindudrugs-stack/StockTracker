@@ -131,6 +131,15 @@ impl InstrumentRepository for SqliteInstrumentRepository {
             .await?;
         rows.into_iter().map(parse_instrument).collect()
     }
+
+    async fn delete(&self, id: Uuid) -> Result<(), RepositoryError> {
+        self.pool
+            .with_conn(move |conn| {
+                conn.execute("DELETE FROM instrument WHERE id = ?1", params![id.to_string()])?;
+                Ok(())
+            })
+            .await
+    }
 }
 
 impl SqliteInstrumentRepository {
@@ -217,5 +226,18 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].symbol, "RELIANCE"); // alphabetical, not insertion order
         assert_eq!(all[1].symbol, "TCS");
+    }
+
+    #[tokio::test]
+    async fn delete_removes_the_instrument() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let repo = SqliteInstrumentRepository::new(pool);
+        let instrument = sample();
+
+        repo.upsert(&instrument).await.unwrap();
+        repo.delete(instrument.id).await.unwrap();
+
+        let result = repo.get(instrument.id).await;
+        assert!(matches!(result, Err(RepositoryError::NotFound(_))));
     }
 }

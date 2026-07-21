@@ -108,6 +108,13 @@ mod tests {
                 .cloned()
                 .collect())
         }
+        async fn delete_for_instrument(&self, portfolio_id: Uuid, instrument_id: Uuid) -> Result<(), RepositoryError> {
+            self.0
+                .lock()
+                .unwrap()
+                .retain(|t| !(t.portfolio_id == portfolio_id && t.instrument_id == instrument_id));
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -125,6 +132,10 @@ mod tests {
         }
         async fn list_for_portfolio(&self, portfolio_id: Uuid) -> Result<Vec<Holding>, RepositoryError> {
             Ok(self.0.lock().unwrap().iter().filter(|h| h.portfolio_id == portfolio_id).cloned().collect())
+        }
+        async fn delete_snapshot(&self, portfolio_id: Uuid, instrument_id: Uuid) -> Result<(), RepositoryError> {
+            self.0.lock().unwrap().retain(|h| !(h.portfolio_id == portfolio_id && h.instrument_id == instrument_id));
+            Ok(())
         }
     }
 

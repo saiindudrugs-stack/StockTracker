@@ -93,6 +93,18 @@ impl HoldingRepository for SqliteHoldingRepository {
             .await?;
         rows.into_iter().map(parse_holding).collect()
     }
+
+    async fn delete_snapshot(&self, portfolio_id: Uuid, instrument_id: Uuid) -> Result<(), RepositoryError> {
+        self.pool
+            .with_conn(move |conn| {
+                conn.execute(
+                    "DELETE FROM holding_snapshot WHERE portfolio_id = ?1 AND instrument_id = ?2",
+                    params![portfolio_id.to_string(), instrument_id.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +151,19 @@ mod tests {
         let fetched = repo.get_snapshot(portfolio_id, instrument_id).await.unwrap().unwrap();
         assert_eq!(fetched.quantity, dec!(20));
         assert_eq!(fetched.realized_pnl, dec!(50));
+    }
+
+    #[tokio::test]
+    async fn delete_snapshot_removes_it() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let repo = SqliteHoldingRepository::new(pool);
+        let portfolio_id = Uuid::new_v4();
+        let instrument_id = Uuid::new_v4();
+        let date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+
+        repo.upsert_snapshot(&Holding { portfolio_id, instrument_id, quantity: dec!(10), avg_cost: dec!(100), realized_pnl: dec!(0) }, date).await.unwrap();
+        repo.delete_snapshot(portfolio_id, instrument_id).await.unwrap();
+
+        assert_eq!(repo.get_snapshot(portfolio_id, instrument_id).await.unwrap(), None);
     }
 }

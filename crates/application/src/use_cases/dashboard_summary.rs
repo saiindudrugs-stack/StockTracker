@@ -85,6 +85,9 @@ mod tests {
         async fn list_for_portfolio(&self, portfolio_id: Uuid) -> Result<Vec<Holding>, RepositoryError> {
             Ok(self.0.iter().filter(|h| h.portfolio_id == portfolio_id).cloned().collect())
         }
+        async fn delete_snapshot(&self, _p: Uuid, _i: Uuid) -> Result<(), RepositoryError> {
+            unimplemented!("not needed for this test")
+        }
     }
 
     struct FakePrices(Mutex<HashMap<Uuid, Decimal>>);

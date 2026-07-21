@@ -47,6 +47,18 @@ pub trait TransactionRepository: Send + Sync {
         portfolio_id: Uuid,
         instrument_id: Uuid,
     ) -> Result<Vec<Transaction>, RepositoryError>;
+    /// Deletes every transaction for one instrument within one portfolio —
+    /// a deliberate escape hatch for removing a mistakenly-added or
+    /// test-only position, NOT the normal correction mechanism. A real
+    /// trading correction should still be an offsetting transaction (see
+    /// the "Auditability" note on Transaction in entities.rs); this exists
+    /// because test/demo cleanup shouldn't require wiping the whole
+    /// database just to remove one row.
+    async fn delete_for_instrument(
+        &self,
+        portfolio_id: Uuid,
+        instrument_id: Uuid,
+    ) -> Result<(), RepositoryError>;
 }
 
 /// Reference data — shared across portfolios (HLD Section 5.1 `instrument`).
@@ -61,6 +73,15 @@ pub trait InstrumentRepository: Send + Sync {
     /// unused trait method and became the only way to populate a ticker
     /// picker.
     async fn list_all(&self) -> Result<Vec<Instrument>, RepositoryError>;
+    /// Removes an instrument from the shared reference table entirely.
+    /// Deliberately NOT safe to call blindly — since instruments are
+    /// shared across every portfolio (HLD Section 5.1), deleting one that's
+    /// still actually held anywhere would orphan that portfolio's holdings.
+    /// The caller (main.rs's remove_from_watchlist command) is responsible
+    /// for checking "is this held anywhere with quantity > 0" first; this
+    /// trait method itself has no way to know that, since it doesn't see
+    /// other repositories.
+    async fn delete(&self, id: Uuid) -> Result<(), RepositoryError>;
 }
 
 /// Derived, rebuildable holding cache (HLD Section 5.1 `holding_snapshot`).
@@ -77,6 +98,11 @@ pub trait HoldingRepository: Send + Sync {
         instrument_id: Uuid,
     ) -> Result<Option<Holding>, RepositoryError>;
     async fn list_for_portfolio(&self, portfolio_id: Uuid) -> Result<Vec<Holding>, RepositoryError>;
+    /// Removes the cached snapshot row — paired with
+    /// TransactionRepository::delete_for_instrument, since a holding with
+    /// no transactions behind it shouldn't still show up in
+    /// list_for_portfolio.
+    async fn delete_snapshot(&self, portfolio_id: Uuid, instrument_id: Uuid) -> Result<(), RepositoryError>;
 }
 
 /// Analytical time-series store — DuckDB in production (HLD Section 5.2).

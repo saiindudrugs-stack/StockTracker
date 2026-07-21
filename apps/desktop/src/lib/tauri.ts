@@ -57,4 +57,12 @@ export const api = {
   // Danger zone — wipes every portfolio, holding, transaction, and cached
   // price. Backed by reset_all_data in main.rs.
   resetAllData: () => invoke<void>("reset_all_data"),
+
+  // Row-level removal, deliberately scoped differently:
+  // removeHolding only clears this portfolio's position (transactions +
+  // snapshot) for that stock — the ticker itself stays tracked elsewhere.
+  // removeFromWatchlist deletes the shared instrument entirely, and the
+  // backend rejects it if any portfolio still holds a non-zero quantity.
+  removeHolding: (portfolioId: string, symbol: string) => invoke<void>("remove_holding", { portfolioId, symbol }),
+  removeFromWatchlist: (symbol: string) => invoke<void>("remove_from_watchlist", { symbol }),
 };

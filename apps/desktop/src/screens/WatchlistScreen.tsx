@@ -95,6 +95,27 @@ export function WatchlistScreen() {
     }
   }
 
+  async function handleRemove(symbol: string) {
+    if (!window.confirm(`Stop tracking ${symbol}? This is only blocked if you still hold it somewhere.`)) {
+      return;
+    }
+    try {
+      await api.removeFromWatchlist(symbol);
+      await refreshInstruments();
+      setRows((prev) => {
+        const next = { ...prev };
+        delete next[symbol];
+        return next;
+      });
+      setError(null);
+    } catch (e) {
+      // Backend rejects removal if any portfolio still holds a non-zero
+      // quantity — surfaces here as a plain, specific error rather than
+      // a silent no-op or a generic failure.
+      setError(String(e));
+    }
+  }
+
   async function handleAddTicker() {
     const trimmed = newTicker.trim();
     if (!trimmed) return;
@@ -174,6 +195,7 @@ export function WatchlistScreen() {
             <th>RSI(14)</th>
             <th>Phase</th>
             <th>Signal</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -217,10 +239,21 @@ export function WatchlistScreen() {
                       <span style={{ color: colors.textMuted }}>—</span>
                     ) : null}
                   </td>
+                  <td>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemove(inst.symbol);
+                      }}
+                      style={{ fontSize: 11, color: colors.danger }}
+                    >
+                      Remove
+                    </button>
+                  </td>
                 </tr>
                 {row?.expanded && row.analysis && (
                   <tr key={`${inst.symbol}-detail`} style={{ background: colors.surface }}>
-                    <td colSpan={10} style={{ padding: "8px 12px", fontSize: 12 }}>
+                    <td colSpan={11} style={{ padding: "8px 12px", fontSize: 12 }}>
                       <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
                         <span>SMA(10): <strong>{fmtNum(row.analysis.sma_10)}</strong></span>
                         <span>SMA(20): <strong>{fmtNum(row.analysis.sma_20)}</strong></span>
@@ -269,7 +302,7 @@ export function WatchlistScreen() {
           })}
           {instruments.length === 0 && (
             <tr>
-              <td colSpan={10} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
+              <td colSpan={11} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
                 No tickers yet — add one above to start tracking it.
               </td>
             </tr>

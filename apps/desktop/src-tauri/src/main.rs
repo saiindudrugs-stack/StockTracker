@@ -614,6 +614,76 @@ async fn reset_all_data(state: State<'_, AppState>) -> Result<(), String> {
     state.pool.reset_all().await.map_err(|e| e.to_string())
 }
 
+/// Removes one stock's row from Holdings for one portfolio — deletes all
+/// of that instrument's transactions in this portfolio plus the cached
+/// snapshot, so it stops showing up in list_holdings. This does NOT delete
+/// the instrument itself from the shared reference table (see
+/// remove_from_watchlist for that) — the same ticker can still be tracked
+/// on the Watchlist screen or held in a different family portfolio.
+///
+/// This is a deliberate test/cleanup escape hatch, not a normal correction
+/// mechanism — see the doc comment on TransactionRepository::
+/// delete_for_instrument for why a real trading mistake should still be
+/// fixed with an offsetting transaction, not a delete.
+#[tauri::command]
+async fn remove_holding(state: State<'_, AppState>, portfolio_id: String, symbol: String) -> Result<(), String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+
+    state
+        .transactions
+        .delete_for_instrument(portfolio_id, instrument.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .holdings
+        .delete_snapshot(portfolio_id, instrument.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Removes a ticker from tracking entirely (Watchlist "Remove"). Since
+/// instruments are shared reference data (HLD Section 5.1) — the same row
+/// backs every portfolio's holdings and the Watchlist and Chart screens —
+/// this is only safe when NOTHING currently holds a non-zero quantity of
+/// it anywhere. Checked here by looking at every portfolio's holdings
+/// before deleting, rather than trusting the caller; a family-scale number
+/// of portfolios makes that loop cheap enough not to need a smarter query.
+#[tauri::command]
+async fn remove_from_watchlist(state: State<'_, AppState>, symbol: String) -> Result<(), String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+
+    let portfolios = state.portfolios.list_all().await.map_err(|e| e.to_string())?;
+    for portfolio in &portfolios {
+        if let Some(holding) = state
+            .holdings
+            .get_snapshot(portfolio.id, instrument.id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            if !holding.quantity.is_zero() {
+                return Err(format!(
+                    "Can't remove {symbol} — still held ({} shares) in portfolio '{}'. Remove it from Holdings there first.",
+                    holding.quantity, portfolio.name
+                ));
+            }
+        }
+    }
+
+    state.instruments.delete(instrument.id).await.map_err(|e| e.to_string())
+}
+
 /// Shared by record_buy and record_sell — both are "look up the instrument,
 /// build a Transaction, run it through RecordTransactionUseCase" with only
 /// the TransactionType differing. Kept as one function rather than two
@@ -858,6 +928,8 @@ fn main() {
             get_market_snapshot,
             analyze_market_phase,
             get_portfolio_analysis,
+            remove_holding,
+            remove_from_watchlist,
             reset_all_data
         ])
         .run(tauri::generate_context!())

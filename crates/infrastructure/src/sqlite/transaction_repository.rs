@@ -146,6 +146,18 @@ impl TransactionRepository for SqliteTransactionRepository {
             .map(|(id, p, i, t, q, pr, f, d, b, r)| parse_transaction(id, p, i, t, q, pr, f, d, b, r))
             .collect()
     }
+
+    async fn delete_for_instrument(&self, portfolio_id: Uuid, instrument_id: Uuid) -> Result<(), RepositoryError> {
+        self.pool
+            .with_conn(move |conn| {
+                conn.execute(
+                    r#"DELETE FROM "transaction" WHERE portfolio_id = ?1 AND instrument_id = ?2"#,
+                    params![portfolio_id.to_string(), instrument_id.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -200,5 +212,23 @@ mod tests {
         let for_a = repo.list_for_instrument(portfolio_id, instrument_a).await.unwrap();
         assert_eq!(for_a.len(), 1);
         assert_eq!(for_a[0].instrument_id, instrument_a);
+    }
+
+    #[tokio::test]
+    async fn delete_for_instrument_removes_only_that_instruments_rows() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let repo = SqliteTransactionRepository::new(pool);
+        let portfolio_id = Uuid::new_v4();
+        let instrument_a = Uuid::new_v4();
+        let instrument_b = Uuid::new_v4();
+
+        repo.record(&sample(portfolio_id, instrument_a)).await.unwrap();
+        repo.record(&sample(portfolio_id, instrument_a)).await.unwrap();
+        repo.record(&sample(portfolio_id, instrument_b)).await.unwrap();
+
+        repo.delete_for_instrument(portfolio_id, instrument_a).await.unwrap();
+
+        assert_eq!(repo.list_for_instrument(portfolio_id, instrument_a).await.unwrap().len(), 0);
+        assert_eq!(repo.list_for_instrument(portfolio_id, instrument_b).await.unwrap().len(), 1);
     }
 }
