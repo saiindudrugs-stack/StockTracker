@@ -48,7 +48,29 @@ impl SqlitePool {
 
     fn run_migrations(&self) -> rusqlite::Result<()> {
         let conn = self.0.lock().expect("sqlite mutex poisoned");
-        conn.execute_batch(SCHEMA)
+        conn.execute_batch(SCHEMA)?;
+
+        // CREATE TABLE IF NOT EXISTS only helps fresh databases — an
+        // existing price_history table from before OHLC/volume were added
+        // needs these columns bolted on explicitly. SQLite's ALTER TABLE
+        // has no "ADD COLUMN IF NOT EXISTS", so each is wrapped to ignore
+        // the specific "duplicate column name" error rather than swallow
+        // every possible failure, so a genuinely different problem still
+        // surfaces.
+        for stmt in [
+            "ALTER TABLE price_history ADD COLUMN open TEXT",
+            "ALTER TABLE price_history ADD COLUMN high TEXT",
+            "ALTER TABLE price_history ADD COLUMN low TEXT",
+            "ALTER TABLE price_history ADD COLUMN volume INTEGER",
+        ] {
+            if let Err(e) = conn.execute(stmt, []) {
+                let already_exists = matches!(&e, rusqlite::Error::SqliteFailure(_, Some(msg)) if msg.contains("duplicate column name"));
+                if !already_exists {
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Runs a blocking rusqlite closure on the blocking thread pool so it
@@ -143,7 +165,11 @@ CREATE TABLE IF NOT EXISTS holding_snapshot (
 CREATE TABLE IF NOT EXISTS price_history (
     instrument_id TEXT NOT NULL,
     date TEXT NOT NULL,
+    open TEXT,
+    high TEXT,
+    low TEXT,
     close TEXT NOT NULL,
+    volume INTEGER,
     PRIMARY KEY (instrument_id, date)
 );
 "#;

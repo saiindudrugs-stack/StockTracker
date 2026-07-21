@@ -109,6 +109,20 @@ pub trait HoldingRepository: Send + Sync {
 /// Deliberately separate from the transactional repositories above: this
 /// data is public market data, unencrypted, and rebuilt/backfilled
 /// independently of the ledger.
+/// One day's OHLCV bar for candlestick charting. Kept as a separate struct
+/// from analytics::DailyBar (which uses f64 for statistical work) —
+/// repository-layer prices stay Decimal, consistent with how every other
+/// stored price in this codebase is handled.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OhlcBar {
+    pub date: NaiveDate,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Option<i64>,
+}
+
 #[async_trait]
 pub trait PriceRepository: Send + Sync {
     async fn upsert_daily_bar(
@@ -124,4 +138,17 @@ pub trait PriceRepository: Send + Sync {
         from: NaiveDate,
         to: NaiveDate,
     ) -> Result<Vec<(NaiveDate, Decimal)>, RepositoryError>;
+    /// Stores a full OHLCV bar — used by the backfill/candlestick path.
+    /// Deliberately separate from upsert_daily_bar rather than widening it:
+    /// most existing callers (day-change %, XIRR mark-to-market) only ever
+    /// needed close, and giving them four new required fields to ignore
+    /// would be a worse API than adding one method for what actually needs
+    /// the extra detail.
+    async fn upsert_ohlc_bar(&self, instrument_id: Uuid, bar: OhlcBar) -> Result<(), RepositoryError>;
+    async fn ohlc_series(
+        &self,
+        instrument_id: Uuid,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Vec<OhlcBar>, RepositoryError>;
 }

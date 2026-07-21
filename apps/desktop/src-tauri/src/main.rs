@@ -12,6 +12,7 @@
 //! per HLD Section 5.1) — the same RELIANCE instrument row is looked up by
 //! every portfolio's holdings.
 
+use chrono::NaiveDate;
 use pm_application::use_cases::{
     ComputeXirrUseCase, DashboardSummary, DashboardSummaryUseCase, RecordTransactionUseCase,
 };
@@ -182,14 +183,148 @@ async fn backfill_history(state: State<'_, AppState>, symbol: String) -> Result<
         .map_err(|e| e.to_string())?;
 
     for bar in &bars {
+        let to_decimal = |v: f64| Decimal::from_str(&v.to_string()).map_err(|e| e.to_string());
         state
             .prices
-            .upsert_daily_bar(instrument.id, bar.date, Decimal::from_str(&bar.close.to_string()).map_err(|e| e.to_string())?)
+            .upsert_ohlc_bar(
+                instrument.id,
+                pm_domain::repositories::OhlcBar {
+                    date: bar.date,
+                    open: to_decimal(bar.open)?,
+                    high: to_decimal(bar.high)?,
+                    low: to_decimal(bar.low)?,
+                    close: to_decimal(bar.close)?,
+                    volume: Some(bar.volume as i64),
+                },
+            )
             .await
             .map_err(|e| e.to_string())?;
     }
 
     Ok(BackfillResult { symbol: instrument.symbol, days_backfilled: bars.len() })
+}
+
+#[derive(Serialize)]
+struct ImportRowResult {
+    row_number: usize,
+    symbol: String,
+    status: String, // "Imported" or an error message
+}
+
+#[derive(Serialize)]
+struct ImportCsvResult {
+    imported: usize,
+    failed: usize,
+    rows: Vec<ImportRowResult>,
+}
+
+/// Parses "Symbol,Quantity,BuyPrice,BuyDate,Exchange" CSV rows and records
+/// each as a Buy transaction in the given portfolio. Hand-rolled parsing
+/// rather than pulling in the `csv` crate — the expected fields (tickers,
+/// numbers, ISO dates) never legitimately contain a comma or a quote, so a
+/// plain split(',') is honest about what this actually handles rather than
+/// implying full RFC 4180 support (quoted fields, embedded commas) it
+/// doesn't have.
+///
+/// BuyDate is optional: per the user's own instruction, a blank date
+/// defaults to exactly one year before today, since older holdings often
+/// don't have an exactly-known purchase date on hand. Exchange is also
+/// optional and defaults to NSE.
+///
+/// Every row is attempted independently — one bad row (a typo'd number, an
+/// invalid date) doesn't abort the rest of the file. The per-row result
+/// list is the whole point: silently skipping a row would be worse than a
+/// slow file, but so would one bad row blocking 50 good ones.
+#[tauri::command]
+async fn import_holdings_csv(state: State<'_, AppState>, portfolio_id: String, csv_content: String) -> Result<ImportCsvResult, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let default_buy_date = chrono::Utc::now().date_naive() - chrono::Duration::days(365);
+
+    let mut rows_out = Vec::new();
+    let mut imported = 0usize;
+    let mut failed = 0usize;
+
+    let lines: Vec<&str> = csv_content.lines().collect();
+    // Skip a header row if the first cell looks like "Symbol" rather than
+    // an actual ticker — tolerant of the template being re-uploaded as-is
+    // versus a header-less export from a spreadsheet.
+    let data_lines = if lines.first().map(|l| l.to_uppercase().starts_with("SYMBOL")).unwrap_or(false) {
+        &lines[1..]
+    } else {
+        &lines[..]
+    };
+
+    for (i, line) in data_lines.iter().enumerate() {
+        let row_number = i + 2; // +1 for 1-indexing, +1 for the header row
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let cols: Vec<&str> = line.split(',').map(|c| c.trim()).collect();
+        if cols.len() < 3 {
+            failed += 1;
+            rows_out.push(ImportRowResult { row_number, symbol: line.to_string(), status: "expected at least Symbol,Quantity,BuyPrice".to_string() });
+            continue;
+        }
+
+        let symbol = cols[0].to_uppercase();
+
+        let outcome: Result<(), String> = async {
+            let quantity = Decimal::from_str(cols[1]).map_err(|e| format!("bad quantity: {e}"))?;
+            let buy_price = Decimal::from_str(cols[2]).map_err(|e| format!("bad buy price: {e}"))?;
+            let buy_date = match cols.get(3).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| format!("bad date '{s}': {e}"))?,
+                None => default_buy_date,
+            };
+            let exchange = cols.get(4).map(|s| s.trim()).filter(|s| !s.is_empty()).unwrap_or("NSE").to_uppercase();
+
+            let instrument = match state.instruments.find_by_symbol(&symbol).await.map_err(|e| e.to_string())? {
+                Some(existing) => existing,
+                None => {
+                    let instrument = Instrument {
+                        id: Uuid::new_v4(),
+                        isin: Isin::parse(&placeholder_isin(&symbol)).map_err(|e| e.to_string())?,
+                        symbol: symbol.clone(),
+                        asset_class: AssetClass::Equity,
+                        exchange,
+                        sector: None,
+                    };
+                    state.instruments.upsert(&instrument).await.map_err(|e| e.to_string())?;
+                    instrument
+                }
+            };
+
+            let txn = Transaction {
+                id: Uuid::new_v4(),
+                portfolio_id,
+                instrument_id: instrument.id,
+                transaction_type: TransactionType::Buy,
+                quantity,
+                price: Money::inr(buy_price),
+                fees: Money::inr(Decimal::ZERO), // historical import — real per-trade fees aren't known
+                trade_date: buy_date,
+                broker_ref: None,
+                recorded_at: chrono::Utc::now(),
+            };
+            let use_case = RecordTransactionUseCase::new(state.transactions.clone(), state.holdings.clone());
+            use_case.execute(txn).await.map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        .await;
+
+        match outcome {
+            Ok(()) => {
+                imported += 1;
+                rows_out.push(ImportRowResult { row_number, symbol, status: "Imported".to_string() });
+            }
+            Err(e) => {
+                failed += 1;
+                rows_out.push(ImportRowResult { row_number, symbol, status: e });
+            }
+        }
+    }
+
+    Ok(ImportCsvResult { imported, failed, rows: rows_out })
 }
 
 #[tauri::command]
@@ -930,6 +1065,7 @@ fn main() {
             get_portfolio_analysis,
             remove_holding,
             remove_from_watchlist,
+            import_holdings_csv,
             reset_all_data
         ])
         .run(tauri::generate_context!())

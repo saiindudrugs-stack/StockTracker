@@ -26,6 +26,13 @@ export const api = {
     invoke<void>("record_buy", { portfolioId, symbol, quantity, price }),
   recordSell: (portfolioId: string, symbol: string, quantity: string, price: string) =>
     invoke<void>("record_sell", { portfolioId, symbol, quantity, price }),
+  // csvContent is the raw file text, read client-side via FileReader — no
+  // file-path plumbing needed since Tauri commands take plain strings.
+  importHoldingsCsv: (portfolioId: string, csvContent: string) =>
+    invoke<{ imported: number; failed: number; rows: { row_number: number; symbol: string; status: string }[] }>(
+      "import_holdings_csv",
+      { portfolioId, csvContent }
+    ),
   computeXirrForSymbol: (portfolioId: string, symbol: string) =>
     invoke<number>("compute_xirr_for_symbol", { portfolioId, symbol }),
   // Unofficial Yahoo Finance pull — see the honesty note in

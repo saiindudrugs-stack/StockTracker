@@ -102,6 +102,12 @@ mod tests {
         async fn daily_series(&self, _i: Uuid, _f: NaiveDate, _t: NaiveDate) -> Result<Vec<(NaiveDate, Decimal)>, RepositoryError> {
             unimplemented!("not needed for this test")
         }
+        async fn upsert_ohlc_bar(&self, _i: Uuid, _bar: pm_domain::repositories::OhlcBar) -> Result<(), RepositoryError> {
+            unimplemented!("not needed for this test")
+        }
+        async fn ohlc_series(&self, _i: Uuid, _f: NaiveDate, _t: NaiveDate) -> Result<Vec<pm_domain::repositories::OhlcBar>, RepositoryError> {
+            unimplemented!("not needed for this test")
+        }
     }
 
     #[tokio::test]

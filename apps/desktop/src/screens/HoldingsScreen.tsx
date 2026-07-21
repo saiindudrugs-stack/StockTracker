@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
 import { api } from "../lib/tauri";
 import type { HoldingView, InstrumentView } from "../lib/types";
 import { colors, panelStyle } from "../lib/theme";
@@ -31,16 +32,30 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
   const [qty, setQty] = useState("5");
   const [price, setPrice] = useState("");
   const [newTicker, setNewTicker] = useState("");
-  const [xirrResult, setXirrResult] = useState<string | null>(null);
+  const [xirrBySymbol, setXirrBySymbol] = useState<Record<string, number | "error">>({});
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [csvFileName, setCsvFileName] = useState<string | null>(null);
+  const [csvContent, setCsvContent] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ imported: number; failed: number; rows: { row_number: number; symbol: string; status: string }[] } | null>(null);
 
   async function refreshHoldings() {
     try {
-      setHoldings(await api.listHoldings(portfolioId));
+      const list = await api.listHoldings(portfolioId);
+      setHoldings(list);
       setError(null);
+      // Auto-compute XIRR per row rather than requiring a click per stock —
+      // this is a cheap ledger read + arithmetic, no network call, so
+      // there's no rate-limit concern computing it for every row on load.
+      for (const h of list) {
+        api
+          .computeXirrForSymbol(portfolioId, h.symbol)
+          .then((rate) => setXirrBySymbol((prev) => ({ ...prev, [h.symbol]: rate })))
+          .catch(() => setXirrBySymbol((prev) => ({ ...prev, [h.symbol]: "error" })));
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -141,15 +156,6 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
     }
   }
 
-  async function handleXirr(sym: string) {
-    try {
-      const rate = await api.computeXirrForSymbol(portfolioId, sym);
-      setXirrResult(`${sym}: ${(rate * 100).toFixed(2)}% XIRR`);
-    } catch (e) {
-      setXirrResult(`${sym}: ${String(e)}`);
-    }
-  }
-
   async function handleRemoveHolding(sym: string) {
     try {
       await api.removeHolding(portfolioId, sym);
@@ -158,6 +164,43 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  function handleCsvFileChosen(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvFileName(file.name);
+    setImportResult(null);
+    const reader = new FileReader();
+    reader.onload = () => setCsvContent(String(reader.result ?? ""));
+    reader.readAsText(file);
+  }
+
+  async function handleImportCsv() {
+    if (!csvContent) return;
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const result = await api.importHoldingsCsv(portfolioId, csvContent);
+      setImportResult(result);
+      await refreshHoldings();
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function handleDownloadTemplate() {
+    const template = "Symbol,Quantity,BuyPrice,BuyDate,Exchange\nRELIANCE,10,2450.50,2025-06-01,NSE\nTCS,5,3800.00,,NSE\nINFY,20,1500.75,2024-11-15,NSE\n";
+    const blob = new Blob([template], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "Portfolio_Holdings_Template.csv";
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -234,6 +277,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                 <th>Day chg %</th>
                 <th>Mkt value</th>
                 <th>Unreal. P/L</th>
+                <th>XIRR %</th>
                 <th></th>
               </tr>
             </thead>
@@ -253,10 +297,22 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                     <td style={{ color: h.unrealized_pnl != null ? pnlColor(pnl) : colors.textMuted, fontWeight: 500 }}>
                       {h.unrealized_pnl ?? "—"}
                     </td>
+                    <td
+                      style={{
+                        color:
+                          typeof xirrBySymbol[h.symbol] === "number"
+                            ? pnlColor(xirrBySymbol[h.symbol] as number)
+                            : colors.textMuted,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {typeof xirrBySymbol[h.symbol] === "number"
+                        ? `${((xirrBySymbol[h.symbol] as number) * 100).toFixed(2)}%`
+                        : xirrBySymbol[h.symbol] === "error"
+                        ? "—"
+                        : "…"}
+                    </td>
                     <td>
-                      <button onClick={() => handleXirr(h.symbol)} style={{ fontSize: 11 }}>
-                        XIRR
-                      </button>{" "}
                       <ConfirmButton
                         label="Remove"
                         confirmLabel="Yes, delete"
@@ -268,14 +324,46 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
               })}
               {holdings.length === 0 && (
                 <tr>
-                  <td colSpan={8} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
+                  <td colSpan={9} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
                     No holdings in this portfolio yet — record a buy below.
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
-          {xirrResult && <p style={{ fontSize: 13, marginTop: 8 }}>{xirrResult}</p>}
+
+          <h2 style={{ fontSize: 15, marginTop: 28, color: colors.navy }}>Bulk Import Holdings (CSV)</h2>
+          <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 0 }}>
+            One row per holding: Symbol, Quantity, BuyPrice, BuyDate (optional — YYYY-MM-DD),
+            Exchange (optional — defaults to NSE). Leave BuyDate blank for older holdings where you
+            don't know the exact purchase date; it'll default to <strong>exactly one year ago</strong>{" "}
+            rather than fail the row. Import is per-portfolio — this only adds to the portfolio
+            currently selected above, so upload separately for each family member.
+          </p>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+            <button onClick={handleDownloadTemplate}>Download CSV Template</button>
+            <input type="file" accept=".csv" onChange={handleCsvFileChosen} style={{ fontSize: 12 }} />
+            <button onClick={handleImportCsv} disabled={!csvContent || importing}>
+              {importing ? "Importing…" : `Import${csvFileName ? ` "${csvFileName}"` : ""}`}
+            </button>
+          </div>
+          {importResult && (
+            <div style={{ ...panelStyle, marginBottom: 20 }}>
+              <p style={{ fontSize: 12, margin: "0 0 6px" }}>
+                <strong style={{ color: colors.success }}>{importResult.imported} imported</strong>
+                {importResult.failed > 0 && (
+                  <span style={{ color: colors.danger }}> · {importResult.failed} failed</span>
+                )}
+              </p>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
+                {importResult.rows.map((r) => (
+                  <li key={r.row_number} style={{ color: r.status === "Imported" ? colors.textMuted : colors.danger }}>
+                    Row {r.row_number} ({r.symbol}): {r.status}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <h2 style={{ fontSize: 15, marginTop: 28, color: colors.navy }}>Add a new ticker</h2>
           <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 0 }}>
