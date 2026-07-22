@@ -129,23 +129,31 @@ async fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentVi
 /// bought/tracked. Exchange defaults to NSE and sector is left blank; both
 /// are editable-in-spirit but there's no edit command yet, only add.
 #[tauri::command]
-async fn add_instrument(state: State<'_, AppState>, symbol: String) -> Result<InstrumentView, String> {
+/// Shared by add_instrument and the CSV importer — "find this symbol, or
+/// register it fresh with the given exchange" is identical either way.
+async fn ensure_instrument_tracked(state: &State<'_, AppState>, symbol: &str, exchange: &str) -> Result<Instrument, String> {
     let symbol = symbol.trim().to_uppercase();
     if symbol.is_empty() {
         return Err("symbol can't be empty".to_string());
     }
     if let Some(existing) = state.instruments.find_by_symbol(&symbol).await.map_err(|e| e.to_string())? {
-        return Ok(InstrumentView { symbol: existing.symbol, sector: existing.sector });
+        return Ok(existing);
     }
     let instrument = Instrument {
         id: Uuid::new_v4(),
         isin: Isin::parse(&placeholder_isin(&symbol)).map_err(|e| e.to_string())?,
         symbol: symbol.clone(),
         asset_class: AssetClass::Equity,
-        exchange: "NSE".to_string(),
+        exchange: exchange.trim().to_uppercase(),
         sector: None,
     };
     state.instruments.upsert(&instrument).await.map_err(|e| e.to_string())?;
+    Ok(instrument)
+}
+
+#[tauri::command]
+async fn add_instrument(state: State<'_, AppState>, symbol: String) -> Result<InstrumentView, String> {
+    let instrument = ensure_instrument_tracked(&state, &symbol, "NSE").await?;
     Ok(InstrumentView { symbol: instrument.symbol, sector: instrument.sector })
 }
 
@@ -290,6 +298,26 @@ async fn import_holdings_csv(state: State<'_, AppState>, portfolio_id: String, c
                         sector: None,
                     };
                     state.instruments.upsert(&instrument).await.map_err(|e| e.to_string())?;
+                    // Best-effort: a newly-imported ticker otherwise has no
+                    // chart/Watchlist data until someone remembers to click
+                    // "Backfill Real 1Y History" manually. A failed backfill
+                    // (rate limit, an unrecognized symbol on Yahoo's side)
+                    // does NOT fail the import itself — the holding is still
+                    // real and correct even if its chart is empty for now.
+                    let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
+                    if let Ok(bars) = state.market_data.fetch_daily_history_1y(&yahoo_symbol).await {
+                        for bar in &bars {
+                            let ohlc = pm_domain::repositories::OhlcBar {
+                                date: bar.date,
+                                open: Decimal::from_str(&bar.open.to_string()).unwrap_or(Decimal::ZERO),
+                                high: Decimal::from_str(&bar.high.to_string()).unwrap_or(Decimal::ZERO),
+                                low: Decimal::from_str(&bar.low.to_string()).unwrap_or(Decimal::ZERO),
+                                close: Decimal::from_str(&bar.close.to_string()).unwrap_or(Decimal::ZERO),
+                                volume: Some(bar.volume as i64),
+                            };
+                            let _ = state.prices.upsert_ohlc_bar(instrument.id, ohlc).await;
+                        }
+                    }
                     instrument
                 }
             };
@@ -347,6 +375,45 @@ async fn get_price_history(state: State<'_, AppState>, symbol: String) -> Result
     Ok(series
         .into_iter()
         .map(|(date, close)| PriceHistoryPoint { date: date.format("%Y-%m-%d").to_string(), close: close.to_string() })
+        .collect())
+}
+
+#[derive(Serialize)]
+struct CandleView {
+    date: String,
+    open: String,
+    high: String,
+    low: String,
+    close: String,
+    volume: Option<i64>,
+}
+
+/// OHLC series for candlestick charting — a full year, matching what
+/// backfill_history actually downloads, rather than the 60-day window
+/// get_price_history uses for the simpler line-chart path.
+#[tauri::command]
+async fn get_ohlc_history(state: State<'_, AppState>, symbol: String) -> Result<Vec<CandleView>, String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+
+    let to = chrono::Utc::now().date_naive();
+    let from = to - chrono::Duration::days(365);
+    let series = state.prices.ohlc_series(instrument.id, from, to).await.map_err(|e| e.to_string())?;
+
+    Ok(series
+        .into_iter()
+        .map(|bar| CandleView {
+            date: bar.date.format("%Y-%m-%d").to_string(),
+            open: bar.open.to_string(),
+            high: bar.high.to_string(),
+            low: bar.low.to_string(),
+            close: bar.close.to_string(),
+            volume: bar.volume,
+        })
         .collect())
 }
 
@@ -900,6 +967,18 @@ async fn compute_xirr_for_symbol(state: State<'_, AppState>, portfolio_id: Strin
         .map_err(|e| e.to_string())
 }
 
+/// Whole-portfolio XIRR for the Dashboard (SRS 2.2.3) — combines every
+/// transaction across every held instrument into one cashflow series. See
+/// the doc comment on ComputeXirrUseCase::execute_for_portfolio for the one
+/// simplification worth knowing about (an unpriced holding contributes
+/// zero to the final mark-to-market cashflow rather than failing outright).
+#[tauri::command]
+async fn compute_portfolio_xirr(state: State<'_, AppState>, portfolio_id: String) -> Result<f64, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let use_case = ComputeXirrUseCase::new(state.transactions.clone(), state.prices.clone());
+    use_case.execute_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())
+}
+
 /// Deterministic pseudo-random walk (simple LCG, fixed seed) — no external
 /// crate needed, and deterministic so every fresh install shows the same
 /// demo chart rather than a different random one each run, which would make
@@ -1066,6 +1145,8 @@ fn main() {
             remove_holding,
             remove_from_watchlist,
             import_holdings_csv,
+            get_ohlc_history,
+            compute_portfolio_xirr,
             reset_all_data
         ])
         .run(tauri::generate_context!())

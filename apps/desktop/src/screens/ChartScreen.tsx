@@ -1,56 +1,179 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/tauri";
-import type { InstrumentView, PriceHistoryPoint } from "../lib/types";
+import type { CandleView, InstrumentView } from "../lib/types";
 import { colors, panelStyle } from "../lib/theme";
 
-const WIDTH = 760;
-const HEIGHT = 260;
-const PADDING = 32;
+const WIDTH = 800;
+const HEIGHT = 340;
+const PADDING_LEFT = 56;
+const PADDING_RIGHT = 16;
+const PADDING_TOP = 16;
+const PADDING_BOTTOM = 36;
+const PLOT_WIDTH = WIDTH - PADDING_LEFT - PADDING_RIGHT;
+const PLOT_HEIGHT = HEIGHT - PADDING_TOP - PADDING_BOTTOM;
 
-function LineChart({ points }: { points: PriceHistoryPoint[] }) {
-  if (points.length < 2) {
+function CandlestickChart({ candles }: { candles: CandleView[] }) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  const parsed = useMemo(
+    () =>
+      candles.map((c) => ({
+        date: c.date,
+        open: parseFloat(c.open),
+        high: parseFloat(c.high),
+        low: parseFloat(c.low),
+        close: parseFloat(c.close),
+        volume: c.volume,
+      })),
+    [candles]
+  );
+
+  if (parsed.length < 2) {
     return (
       <p style={{ fontSize: 12, color: colors.textMuted }}>
-        Not enough price history to draw a chart yet.
+        Not enough OHLC history to draw candles yet — try "Backfill Real 1Y History" above.
       </p>
     );
   }
 
-  const closes = points.map((p) => parseFloat(p.close));
-  const min = Math.min(...closes);
-  const max = Math.max(...closes);
+  const min = Math.min(...parsed.map((p) => p.low));
+  const max = Math.max(...parsed.map((p) => p.high));
   const range = max - min || 1;
+  const priceToY = (price: number) => PADDING_TOP + PLOT_HEIGHT * (1 - (price - min) / range);
 
-  const xStep = (WIDTH - PADDING * 2) / (points.length - 1);
-  const coords = closes.map((c, i) => {
-    const x = PADDING + i * xStep;
-    const y = PADDING + (HEIGHT - PADDING * 2) * (1 - (c - min) / range);
-    return [x, y] as const;
-  });
-  const path = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const slotWidth = PLOT_WIDTH / parsed.length;
+  const bodyWidth = Math.max(2, Math.min(10, slotWidth * 0.6));
+  const xForIndex = (i: number) => PADDING_LEFT + slotWidth * i + slotWidth / 2;
+
+  // A handful of evenly-spaced date labels on the X axis rather than one
+  // per candle (a year of daily candles would otherwise produce an
+  // unreadable wall of overlapping text).
+  const labelCount = Math.min(7, parsed.length);
+  const labelIndices = Array.from({ length: labelCount }, (_, i) =>
+    Math.round((i * (parsed.length - 1)) / Math.max(1, labelCount - 1))
+  );
+
+  // Y-axis gridlines: min, mid, max.
+  const yTicks = [min, min + range / 2, max];
+
+  function handleMouseMove(e: React.MouseEvent<SVGSVGElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const scaleX = WIDTH / rect.width;
+    const svgX = (e.clientX - rect.left) * scaleX;
+    const idx = Math.round((svgX - PADDING_LEFT - slotWidth / 2) / slotWidth);
+    setHoverIndex(idx >= 0 && idx < parsed.length ? idx : null);
+  }
+
+  const hovered = hoverIndex != null ? parsed[hoverIndex] : null;
 
   return (
-    <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width="100%" height={HEIGHT}>
-      <line x1={PADDING} y1={HEIGHT - PADDING} x2={WIDTH - PADDING} y2={HEIGHT - PADDING} stroke={colors.border} />
-      <line x1={PADDING} y1={PADDING} x2={PADDING} y2={HEIGHT - PADDING} stroke={colors.border} />
-      <text x={4} y={PADDING + 4} fontSize={10} fill={colors.textMuted}>
-        {max.toFixed(0)}
-      </text>
-      <text x={4} y={HEIGHT - PADDING + 4} fontSize={10} fill={colors.textMuted}>
-        {min.toFixed(0)}
-      </text>
-      <path d={path} fill="none" stroke={colors.accent} strokeWidth={2} />
-      {coords.length > 0 && (
-        <circle cx={coords[coords.length - 1][0]} cy={coords[coords.length - 1][1]} r={3} fill={colors.navy} />
-      )}
-    </svg>
+    <div>
+      <svg
+        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+        width="100%"
+        height={HEIGHT}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setHoverIndex(null)}
+        style={{ cursor: "crosshair" }}
+      >
+        {/* Y-axis gridlines + labels */}
+        {yTicks.map((price, i) => (
+          <g key={i}>
+            <line
+              x1={PADDING_LEFT}
+              y1={priceToY(price)}
+              x2={WIDTH - PADDING_RIGHT}
+              y2={priceToY(price)}
+              stroke="#eee"
+              strokeDasharray={i === 1 ? "3,3" : undefined}
+            />
+            <text x={4} y={priceToY(price) + 4} fontSize={10} fill={colors.textMuted}>
+              {price.toFixed(price > 1000 ? 0 : 2)}
+            </text>
+          </g>
+        ))}
+
+        {/* X-axis date labels */}
+        {labelIndices.map((idx) => (
+          <text
+            key={idx}
+            x={xForIndex(idx)}
+            y={HEIGHT - PADDING_BOTTOM + 16}
+            fontSize={10}
+            fill={colors.textMuted}
+            textAnchor="middle"
+          >
+            {parsed[idx].date.slice(5)}
+          </text>
+        ))}
+        <line
+          x1={PADDING_LEFT}
+          y1={HEIGHT - PADDING_BOTTOM}
+          x2={WIDTH - PADDING_RIGHT}
+          y2={HEIGHT - PADDING_BOTTOM}
+          stroke={colors.border}
+        />
+
+        {/* Candles */}
+        {parsed.map((c, i) => {
+          const x = xForIndex(i);
+          const isUp = c.close >= c.open;
+          const color = isUp ? colors.success : colors.danger;
+          const bodyTop = priceToY(Math.max(c.open, c.close));
+          const bodyBottom = priceToY(Math.min(c.open, c.close));
+          return (
+            <g key={c.date}>
+              <line x1={x} y1={priceToY(c.high)} x2={x} y2={priceToY(c.low)} stroke={color} strokeWidth={1} />
+              <rect
+                x={x - bodyWidth / 2}
+                y={bodyTop}
+                width={bodyWidth}
+                height={Math.max(1, bodyBottom - bodyTop)}
+                fill={color}
+              />
+            </g>
+          );
+        })}
+
+        {/* Hover crosshair */}
+        {hoverIndex != null && (
+          <line
+            x1={xForIndex(hoverIndex)}
+            y1={PADDING_TOP}
+            x2={xForIndex(hoverIndex)}
+            y2={HEIGHT - PADDING_BOTTOM}
+            stroke={colors.navy}
+            strokeWidth={1}
+            strokeDasharray="2,2"
+          />
+        )}
+      </svg>
+
+      {/* Tooltip: date + OHLCV at the cursor, as requested — shown below
+          the chart rather than as a floating SVG box, so it never gets
+          clipped at the chart's edges. */}
+      <div style={{ fontSize: 12, minHeight: 20, color: colors.textMuted }}>
+        {hovered ? (
+          <span>
+            <strong style={{ color: colors.navy }}>{hovered.date}</strong>
+            {"  "}O: {hovered.open.toFixed(2)} H: {hovered.high.toFixed(2)} L: {hovered.low.toFixed(2)} C:{" "}
+            <strong style={{ color: hovered.close >= hovered.open ? colors.success : colors.danger }}>
+              {hovered.close.toFixed(2)}
+            </strong>
+            {hovered.volume != null ? `  Vol: ${hovered.volume.toLocaleString()}` : ""}
+          </span>
+        ) : (
+          "Hover over the chart to see a candle's exact date and OHLC values."
+        )}
+      </div>
+    </div>
   );
 }
 
 export function ChartScreen() {
   const [instruments, setInstruments] = useState<InstrumentView[]>([]);
   const [symbol, setSymbol] = useState<string | null>(null);
-  const [history, setHistory] = useState<PriceHistoryPoint[]>([]);
+  const [candles, setCandles] = useState<CandleView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
   const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
@@ -68,7 +191,7 @@ export function ChartScreen() {
   async function loadHistory() {
     if (!symbol) return;
     try {
-      setHistory(await api.getPriceHistory(symbol));
+      setCandles(await api.getOhlcHistory(symbol));
     } catch (e) {
       setError(String(e));
     }
@@ -98,11 +221,11 @@ export function ChartScreen() {
     <div style={{ padding: 24 }}>
       <h1 style={{ fontSize: 20, color: colors.navy, marginBottom: 4 }}>Chart</h1>
       <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0 }}>
-        A daily-close line chart. New tickers auto-backfill a real year of Yahoo Finance history
-        the moment they're added; the two original demo instruments (RELIANCE, TCS) still carry
-        synthetic seed data until you backfill them here. Candlesticks/Heikin Ashi/Renko and
-        overlaid indicators aren't built into this chart yet — see the Watchlist screen's
-        "Analyze" for SMA/RSI numbers on the same underlying data.
+        Real candlesticks (green = up day, red = down day) over up to a year of daily OHLC —
+        actual open/high/low/close, not a close-only approximation. Hover anywhere on the chart
+        for the exact date and values under your cursor. New tickers auto-backfill this history
+        the moment they're added; the two original demo instruments still carry synthetic data
+        until you backfill them here.
       </p>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -132,7 +255,7 @@ export function ChartScreen() {
       {error && <p style={{ color: colors.danger }}>{error}</p>}
 
       <div style={panelStyle}>
-        <LineChart points={history} />
+        <CandlestickChart candles={candles} />
       </div>
     </div>
   );

@@ -38,6 +38,15 @@ export interface PriceHistoryPoint {
   close: string;
 }
 
+export interface CandleView {
+  date: string;
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: number | null;
+}
+
 export interface RefreshFailure {
   symbol: string;
   reason: string;

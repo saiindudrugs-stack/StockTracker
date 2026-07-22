@@ -41,6 +41,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
   const [csvContent, setCsvContent] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ imported: number; failed: number; rows: { row_number: number; symbol: string; status: string }[] } | null>(null);
+  const [volumeBySymbol, setVolumeBySymbol] = useState<Record<string, number>>({});
 
   async function refreshHoldings() {
     try {
@@ -55,6 +56,19 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
           .computeXirrForSymbol(portfolioId, h.symbol)
           .then((rate) => setXirrBySymbol((prev) => ({ ...prev, [h.symbol]: rate })))
           .catch(() => setXirrBySymbol((prev) => ({ ...prev, [h.symbol]: "error" })));
+        // Volume only (not the full Watchlist column set) — just enough
+        // for the "sort by today's market activity" ask, reusing the same
+        // cheap quote call Watchlist uses rather than adding a new one.
+        api
+          .getMarketSnapshot(h.symbol)
+          .then((snap) => {
+            if (snap.volume != null) {
+              setVolumeBySymbol((prev) => ({ ...prev, [h.symbol]: snap.volume as number }));
+            }
+          })
+          .catch(() => {
+            /* leave this row's volume absent — it just sorts to the bottom */
+          });
       }
     } catch (e) {
       setError(String(e));
@@ -203,6 +217,11 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
     URL.revokeObjectURL(url);
   }
 
+  // Same "sort by today's market activity" behavior as Watchlist — highest
+  // volume first, unknown-volume rows sink to the bottom rather than
+  // jumping around as data trickles in.
+  const sortedHoldings = [...holdings].sort((a, b) => (volumeBySymbol[b.symbol] ?? -1) - (volumeBySymbol[a.symbol] ?? -1));
+
   return (
     <div style={{ padding: 24 }}>
       <h1 style={{ fontSize: 20, color: colors.navy, marginBottom: 4 }}>Holdings</h1>
@@ -275,6 +294,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                 <th>Avg cost</th>
                 <th>LTP</th>
                 <th>Day chg %</th>
+                <th>Volume</th>
                 <th>Mkt value</th>
                 <th>Unreal. P/L</th>
                 <th>XIRR %</th>
@@ -282,7 +302,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
               </tr>
             </thead>
             <tbody>
-              {holdings.map((h) => {
+              {sortedHoldings.map((h) => {
                 const pnl = parseNumeric(h.unrealized_pnl);
                 return (
                   <tr key={h.symbol} style={{ borderBottom: "1px solid #eee" }}>
@@ -293,6 +313,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                     <td style={{ color: h.day_change_pct != null ? pnlColor(h.day_change_pct) : colors.textMuted }}>
                       {h.day_change_pct != null ? `${(h.day_change_pct * 100).toFixed(2)}%` : "—"}
                     </td>
+                    <td>{volumeBySymbol[h.symbol] != null ? volumeBySymbol[h.symbol].toLocaleString() : "—"}</td>
                     <td>{h.market_value ?? "—"}</td>
                     <td style={{ color: h.unrealized_pnl != null ? pnlColor(pnl) : colors.textMuted, fontWeight: 500 }}>
                       {h.unrealized_pnl ?? "—"}
@@ -324,7 +345,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
               })}
               {holdings.length === 0 && (
                 <tr>
-                  <td colSpan={9} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
+                  <td colSpan={10} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
                     No holdings in this portfolio yet — record a buy below.
                   </td>
                 </tr>

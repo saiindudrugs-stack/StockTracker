@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CandleView,
   DashboardSummary,
   HoldingView,
   InstrumentView,
@@ -35,6 +36,7 @@ export const api = {
     ),
   computeXirrForSymbol: (portfolioId: string, symbol: string) =>
     invoke<number>("compute_xirr_for_symbol", { portfolioId, symbol }),
+  computePortfolioXirr: (portfolioId: string) => invoke<number>("compute_portfolio_xirr", { portfolioId }),
   // Unofficial Yahoo Finance pull — see the honesty note in
   // crates/infrastructure/src/market_data/mod.rs. Can fail per-symbol
   // without failing the whole refresh; check `.failed` on the result.
@@ -49,6 +51,7 @@ export const api = {
   // demo instruments) otherwise has little to no real chart data.
   backfillHistory: (symbol: string) => invoke<{ symbol: string; days_backfilled: number }>("backfill_history", { symbol }),
   getPriceHistory: (symbol: string) => invoke<PriceHistoryPoint[]>("get_price_history", { symbol }),
+  getOhlcHistory: (symbol: string) => invoke<CandleView[]>("get_ohlc_history", { symbol }),
 
   // Works for ANY tracked instrument, held or not — this is what makes a
   // watchlist (tracking before buying) possible without a portfolio_id.

@@ -81,4 +81,58 @@ impl ComputeXirrUseCase {
 
         Ok(compute_xirr(&flows)?)
     }
+
+    /// Portfolio-level XIRR (SRS 2.2.3 dashboard metric) — every
+    /// transaction across every instrument in the portfolio feeds one
+    /// combined cashflow series, plus a single final "sell everything
+    /// today" cashflow using each held instrument's own current price.
+    ///
+    /// Simplification, stated plainly: if a held instrument has no cached
+    /// price yet, its contribution to that final mark-to-market cashflow
+    /// is treated as zero rather than failing the whole calculation — one
+    /// stale ticker shouldn't block a portfolio-wide number, but it does
+    /// mean the result can understate true returns until every holding has
+    /// been priced at least once (Refresh Prices on the Holdings screen).
+    pub async fn execute_for_portfolio(&self, portfolio_id: Uuid) -> Result<f64, ComputeXirrError> {
+        let ledger = self.transactions.list_for_portfolio(portfolio_id).await?;
+
+        let mut flows: Vec<Cashflow> = ledger
+            .iter()
+            .filter_map(|t| {
+                let amount = t.cash_impact().to_f64()?;
+                if amount == 0.0 {
+                    return None;
+                }
+                Some(Cashflow { date: t.trade_date, amount })
+            })
+            .collect();
+
+        let mut held_qty_by_instrument: std::collections::HashMap<Uuid, rust_decimal::Decimal> = std::collections::HashMap::new();
+        for t in &ledger {
+            let entry = held_qty_by_instrument.entry(t.instrument_id).or_insert(rust_decimal::Decimal::ZERO);
+            *entry = match t.transaction_type {
+                TransactionType::Buy | TransactionType::SipInstallment | TransactionType::Bonus => *entry + t.quantity,
+                TransactionType::Sell => *entry - t.quantity,
+                TransactionType::Split => t.quantity,
+                TransactionType::Dividend => *entry,
+            };
+        }
+
+        let mut total_market_value = 0.0;
+        for (instrument_id, qty) in held_qty_by_instrument {
+            if qty <= rust_decimal::Decimal::ZERO {
+                continue;
+            }
+            if let Some(ltp) = self.prices.latest_price(instrument_id).await? {
+                total_market_value += (qty * ltp).to_f64().unwrap_or(0.0);
+            }
+            // else: no price yet — contributes 0, per the doc comment above.
+        }
+
+        if total_market_value > 0.0 {
+            flows.push(Cashflow { date: Utc::now().date_naive(), amount: total_market_value });
+        }
+
+        Ok(compute_xirr(&flows)?)
+    }
 }

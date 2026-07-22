@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri";
 import type { InstrumentView, MarketSnapshotView, TechnicalAnalysisView } from "../lib/types";
 import { colors, phaseColor, recommendationColor } from "../lib/theme";
@@ -147,13 +147,23 @@ export function WatchlistScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, instruments.length]);
 
+  // Auto-sort by today's trading volume, highest first — surfaces the most
+  // actively-moving stocks without you having to hunt for them. Instruments
+  // with no snapshot loaded yet (or no volume in it) sort to the bottom
+  // rather than jumping around unpredictably as data trickles in.
+  const sortedInstruments = [...instruments].sort((a, b) => {
+    const va = rows[a.symbol]?.snapshot?.volume ?? -1;
+    const vb = rows[b.symbol]?.snapshot?.volume ?? -1;
+    return vb - va;
+  });
+
   return (
     <div style={{ padding: 24 }}>
       <h1 style={{ fontSize: 20, color: colors.navy, marginBottom: 4 }}>Watchlist</h1>
       <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0 }}>
         Track any ticker before you've bought it — adding one here doesn't require a portfolio or
         a buy transaction. Once you're ready, use the Buy form on the Holdings screen for whichever
-        family portfolio should own it.
+        family portfolio should own it. Sorted by today's volume, highest first.
       </p>
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
@@ -197,7 +207,7 @@ export function WatchlistScreen() {
           </tr>
         </thead>
         <tbody>
-          {instruments.map((inst) => {
+          {sortedInstruments.map((inst) => {
             const row = rows[inst.symbol];
             return (
               <>

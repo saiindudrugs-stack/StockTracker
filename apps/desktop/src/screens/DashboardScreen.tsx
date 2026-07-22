@@ -11,6 +11,8 @@ const SECTOR_COLORS = ["#2E74B5", "#5B9BD5", "#9DC3E6", "#1F3864", "#7F9EC2"];
 export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [holdings, setHoldings] = useState<HoldingView[]>([]);
+  const [xirr, setXirr] = useState<number | null>(null);
+  const [xirrError, setXirrError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -20,6 +22,17 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
         setHoldings(h);
       })
       .catch((e) => setError(String(e)));
+
+    // Kept separate from the Promise.all above: XIRR can legitimately fail
+    // to compute (e.g. no priced holdings, or fewer than one inflow/outflow
+    // pair) even when the rest of the dashboard is fine — a solver error
+    // here shouldn't blank out net worth and P/L too.
+    setXirr(null);
+    setXirrError(null);
+    api
+      .computePortfolioXirr(portfolioId)
+      .then(setXirr)
+      .catch((e) => setXirrError(String(e)));
   }, [portfolioId]);
 
   // Allocation by sector, computed client-side from market value — there's
@@ -91,6 +104,18 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
             >
               ₹{summary.overall_realized_pnl}
             </div>
+          </div>
+          <div style={{ ...cardStyle, minWidth: 160 }}>
+            <div style={{ fontSize: 12, color: colors.textMuted }}>Portfolio XIRR</div>
+            {xirr != null ? (
+              <div style={{ fontSize: 18, fontWeight: 600, color: xirr >= 0 ? colors.success : colors.danger }}>
+                {(xirr * 100).toFixed(2)}%
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+                {xirrError ? "Not enough data yet" : "…"}
+              </div>
+            )}
           </div>
         </div>
         </>
