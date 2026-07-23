@@ -57,8 +57,16 @@ impl YahooFinanceProvider {
         }
     }
 
+    /// Rounds to 2 decimal places (INR's paisa) at the exact point a price
+    /// crosses from Yahoo's f64 JSON into our Decimal storage. Same fix as
+    /// the earlier avg_cost bug: whether the un-rounded tail
+    /// (e.g. 761.4500122070313) comes from Yahoo's own server-side
+    /// float32 rounding or from float64 arithmetic generally, a stock
+    /// price has no meaningful precision beyond the paisa — leaving it
+    /// un-rounded just lets noise propagate into LTP, market value, and
+    /// unrealized P/L display everywhere downstream.
     fn f64_to_decimal(v: f64) -> Option<Decimal> {
-        Decimal::from_str(&v.to_string()).ok()
+        Decimal::from_str(&v.to_string()).ok().map(|d| d.round_dp(2))
     }
 }
 

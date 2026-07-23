@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri";
 import type { InstrumentView, MarketSnapshotView, TechnicalAnalysisView } from "../lib/types";
-import { colors, phaseColor, recommendationColor } from "../lib/theme";
+import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 
 const AUTO_REFRESH_MS = 30_000;
@@ -195,6 +195,7 @@ export function WatchlistScreen() {
           <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
             <th style={{ padding: "6px 8px 6px 0" }}>Symbol</th>
             <th>Price</th>
+            <th>Day chg %</th>
             <th>Day High</th>
             <th>Day Low</th>
             <th>52W High</th>
@@ -207,13 +208,28 @@ export function WatchlistScreen() {
           </tr>
         </thead>
         <tbody>
-          {sortedInstruments.map((inst) => {
+          {sortedInstruments.map((inst, index) => {
             const row = rows[inst.symbol];
+            const dayChange = row?.snapshot?.day_change_pct ?? null;
+            const tint = dayChangeRowTint(dayChange) ?? zebraRowTint(index);
+            const flash = flashAnimation(dayChange);
             return (
               <>
-                <tr key={inst.symbol} style={{ borderBottom: "1px solid #eee", cursor: "pointer" }} onClick={() => patchRow(inst.symbol, { expanded: !row?.expanded })}>
-                  <td style={{ padding: "6px 8px 6px 0" }}>{inst.symbol}</td>
+                <tr
+                  key={inst.symbol}
+                  style={{
+                    borderBottom: "1px solid #eee",
+                    cursor: "pointer",
+                    backgroundColor: flash ? undefined : tint,
+                    animation: flash ? `${flash} 1.4s ease-in-out infinite` : undefined,
+                  }}
+                  onClick={() => patchRow(inst.symbol, { expanded: !row?.expanded })}
+                >
+                  <td style={{ padding: "6px 8px 6px 0", fontWeight: flash ? 700 : 400 }}>{inst.symbol}</td>
                   <td>{row?.snapshot?.price ?? (row?.loadingSnapshot ? "…" : "—")}</td>
+                  <td style={{ color: dayChange != null ? pnlColor(dayChange) : colors.textMuted, fontWeight: 600 }}>
+                    {dayChange != null ? `${(dayChange * 100).toFixed(2)}%` : "—"}
+                  </td>
                   <td>{row?.snapshot?.day_high ?? "—"}</td>
                   <td>{row?.snapshot?.day_low ?? "—"}</td>
                   <td>{row?.snapshot?.week52_high ?? "—"}</td>
@@ -257,7 +273,7 @@ export function WatchlistScreen() {
                 </tr>
                 {row?.expanded && row.analysis && (
                   <tr key={`${inst.symbol}-detail`} style={{ background: colors.surface }}>
-                    <td colSpan={11} style={{ padding: "8px 12px", fontSize: 12 }}>
+                    <td colSpan={12} style={{ padding: "8px 12px", fontSize: 12 }}>
                       <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
                         <span>SMA(10): <strong>{fmtNum(row.analysis.sma_10)}</strong></span>
                         <span>SMA(20): <strong>{fmtNum(row.analysis.sma_20)}</strong></span>
@@ -306,7 +322,7 @@ export function WatchlistScreen() {
           })}
           {instruments.length === 0 && (
             <tr>
-              <td colSpan={11} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
+              <td colSpan={12} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
                 No tickers yet — add one above to start tracking it.
               </td>
             </tr>

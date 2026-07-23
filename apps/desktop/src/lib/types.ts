@@ -26,6 +26,16 @@ export interface HoldingView {
   market_value: string | null;
   unrealized_pnl: string | null;
   day_change_pct: number | null;
+  // CAGR: plain point-to-point return since the earliest Buy of this stock
+  // in this portfolio, annualized — different from XIRR (money-weighted,
+  // accounts for timing of each cashflow). null when there's no Buy date
+  // yet to measure from.
+  cagr_pct: number | null;
+  // What the invested capital would be worth today at a flat 9.5% simple
+  // interest (no compounding) over the same holding period — a benchmark
+  // to compare against, not a real investment return.
+  simple_interest_value_at_9_5_pct: string | null;
+  years_held: number | null;
 }
 
 export interface InstrumentView {
@@ -65,6 +75,7 @@ export interface MarketSnapshotView {
   week52_high: string | null;
   week52_low: string | null;
   volume: number | null;
+  day_change_pct: number | null;
 }
 
 export interface TechnicalAnalysisView {

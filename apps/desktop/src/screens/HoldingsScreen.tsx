@@ -2,19 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { api } from "../lib/tauri";
 import type { HoldingView, InstrumentView } from "../lib/types";
-import { colors, panelStyle } from "../lib/theme";
+import { colors, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 
 type Tab = "long_term" | "intraday";
 type TxnType = "buy" | "sell";
 
 const AUTO_REFRESH_MS = 30_000;
-
-function pnlColor(value: number): string {
-  if (value > 0) return colors.success;
-  if (value < 0) return colors.danger;
-  return colors.textMuted;
-}
 
 function parseNumeric(s: string | null): number {
   if (s === null) return 0;
@@ -297,26 +291,56 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                 <th>Volume</th>
                 <th>Mkt value</th>
                 <th>Unreal. P/L</th>
+                <th>CAGR %</th>
+                <th>SI @9.5% vs Actual</th>
                 <th>XIRR %</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {sortedHoldings.map((h) => {
+              {sortedHoldings.map((h, index) => {
                 const pnl = parseNumeric(h.unrealized_pnl);
+                const tint = dayChangeRowTint(h.day_change_pct) ?? zebraRowTint(index);
+                const flash = flashAnimation(h.day_change_pct);
+                const siValue = h.simple_interest_value_at_9_5_pct != null ? parseFloat(h.simple_interest_value_at_9_5_pct) : null;
+                const actualValue = h.market_value != null ? parseFloat(h.market_value) : null;
+                const beatingSi = siValue != null && actualValue != null ? actualValue - siValue : null;
                 return (
-                  <tr key={h.symbol} style={{ borderBottom: "1px solid #eee" }}>
-                    <td style={{ padding: "6px 8px 6px 0" }}>{h.symbol}</td>
+                  <tr
+                    key={h.symbol}
+                    style={{
+                      borderBottom: "1px solid #eee",
+                      backgroundColor: flash ? undefined : tint,
+                      animation: flash ? `${flash} 1.4s ease-in-out infinite` : undefined,
+                    }}
+                  >
+                    <td style={{ padding: "6px 8px 6px 0", fontWeight: flash ? 700 : 400 }}>{h.symbol}</td>
                     <td>{h.quantity}</td>
                     <td>{h.avg_cost}</td>
                     <td>{h.last_price ?? "—"}</td>
-                    <td style={{ color: h.day_change_pct != null ? pnlColor(h.day_change_pct) : colors.textMuted }}>
+                    <td style={{ color: h.day_change_pct != null ? pnlColor(h.day_change_pct) : colors.textMuted, fontWeight: 600 }}>
                       {h.day_change_pct != null ? `${(h.day_change_pct * 100).toFixed(2)}%` : "—"}
                     </td>
                     <td>{volumeBySymbol[h.symbol] != null ? volumeBySymbol[h.symbol].toLocaleString() : "—"}</td>
                     <td>{h.market_value ?? "—"}</td>
                     <td style={{ color: h.unrealized_pnl != null ? pnlColor(pnl) : colors.textMuted, fontWeight: 500 }}>
                       {h.unrealized_pnl ?? "—"}
+                    </td>
+                    <td style={{ color: h.cagr_pct != null ? pnlColor(h.cagr_pct) : colors.textMuted, fontWeight: 600 }}>
+                      {h.cagr_pct != null ? `${h.cagr_pct.toFixed(2)}%` : "—"}
+                    </td>
+                    <td style={{ fontSize: 11 }}>
+                      {siValue != null && beatingSi != null ? (
+                        <>
+                          <div style={{ color: colors.textMuted }}>SI: {siValue.toFixed(0)}</div>
+                          <div style={{ color: pnlColor(beatingSi), fontWeight: 600 }}>
+                            {beatingSi >= 0 ? "Beating by " : "Behind by "}
+                            {Math.abs(beatingSi).toFixed(0)}
+                          </div>
+                        </>
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td
                       style={{
@@ -345,7 +369,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
               })}
               {holdings.length === 0 && (
                 <tr>
-                  <td colSpan={10} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
+                  <td colSpan={12} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
                     No holdings in this portfolio yet — record a buy below.
                   </td>
                 </tr>

@@ -159,12 +159,69 @@ pub fn rsi(closes: &[f64], period: usize) -> Vec<Option<f64>> {
     result
 }
 
+/// Compound Annual Growth Rate between an initial and final value over a
+/// number of years — a plain point-to-point return (SRS 2.2.3 "CAGR"),
+/// unlike XIRR which accounts for the timing of each cashflow. Returns
+/// `None` when the formula is undefined (non-positive years, or a
+/// non-positive initial value — can't take a meaningful ratio against
+/// zero or negative cost).
+pub fn cagr(initial_value: f64, final_value: f64, years: f64) -> Option<f64> {
+    if initial_value <= 0.0 || years <= 0.0 {
+        return None;
+    }
+    Some((final_value / initial_value).powf(1.0 / years) - 1.0)
+}
+
+/// Value of `principal` after `years` at a fixed simple-interest `rate`
+/// (e.g. 0.095 for 9.5%) — principal * (1 + rate * years). This exists
+/// purely as a benchmark comparison ("what would a fixed-rate alternative
+/// have been worth"), not because any real investment actually grows this
+/// way — simple interest doesn't compound, which is exactly why it's a
+/// conservative, easy-to-eyeball reference point rather than a claim about
+/// what a real 9.5% product would return.
+pub fn simple_interest_value(principal: f64, rate: f64, years: f64) -> f64 {
+    principal * (1.0 + rate * years)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() < tol
+    }
+
+    #[test]
+    fn cagr_doubles_in_one_year_is_100_percent() {
+        let rate = cagr(100.0, 200.0, 1.0).unwrap();
+        assert!(approx_eq(rate, 1.0, 1e-9), "rate was {rate}");
+    }
+
+    #[test]
+    fn cagr_matches_known_two_year_example() {
+        // 100 -> 121 over 2 years is exactly 10% CAGR: 100*1.1^2 = 121.
+        let rate = cagr(100.0, 121.0, 2.0).unwrap();
+        assert!(approx_eq(rate, 0.10, 1e-9), "rate was {rate}");
+    }
+
+    #[test]
+    fn cagr_is_none_for_non_positive_years_or_initial_value() {
+        assert_eq!(cagr(100.0, 150.0, 0.0), None);
+        assert_eq!(cagr(100.0, 150.0, -1.0), None);
+        assert_eq!(cagr(0.0, 150.0, 1.0), None);
+        assert_eq!(cagr(-50.0, 150.0, 1.0), None);
+    }
+
+    #[test]
+    fn simple_interest_value_matches_hand_calculation() {
+        // 10,000 at 9.5% simple interest for 2 years = 10,000 * 1.19 = 11,900.
+        let value = simple_interest_value(10_000.0, 0.095, 2.0);
+        assert!(approx_eq(value, 11_900.0, 1e-9), "value was {value}");
+    }
+
+    #[test]
+    fn simple_interest_at_zero_years_returns_principal_unchanged() {
+        assert!(approx_eq(simple_interest_value(5000.0, 0.095, 0.0), 5000.0, 1e-9));
     }
 
     #[test]

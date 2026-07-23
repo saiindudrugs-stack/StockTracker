@@ -54,6 +54,21 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", display: "flex", height: "100vh" }}>
+      {/* Global keyframes for the ±3.5% day-move flash alert (Holdings and
+          Watchlist rows) — a plain <style> tag since this app has no CSS
+          module/stylesheet setup, everything else is inline styles. Amber
+          for a stock falling beyond the threshold, green for rising beyond
+          it, per the user's own color choice. */}
+      <style>{`
+        @keyframes flash-amber {
+          0%, 100% { background-color: rgba(230, 162, 60, 0.15); }
+          50% { background-color: rgba(230, 162, 60, 0.55); }
+        }
+        @keyframes flash-green {
+          0%, 100% { background-color: rgba(30, 122, 52, 0.12); }
+          50% { background-color: rgba(30, 122, 52, 0.45); }
+        }
+      `}</style>
       <NavRail active={screen} onSelect={setScreen} />
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <PortfolioTabs

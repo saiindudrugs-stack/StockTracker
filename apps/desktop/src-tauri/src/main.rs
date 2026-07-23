@@ -64,6 +64,16 @@ struct HoldingView {
     /// price history yet (e.g. a ticker added and priced for the first
     /// time today has nothing to compare against).
     day_change_pct: Option<f64>,
+    /// Point-to-point return since the earliest Buy of this stock in this
+    /// portfolio — unlike XIRR, ignores cashflow timing (a single lump
+    /// entry vs. several buys), so the two numbers answering different
+    /// questions can legitimately disagree.
+    cagr_pct: Option<f64>,
+    /// What the invested amount would be worth today at a flat 9.5%
+    /// simple-interest rate over the same holding period — a plain
+    /// benchmark line, not a claim about any real fixed-income product.
+    simple_interest_value_at_9_5_pct: Option<String>,
+    years_held: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -93,6 +103,18 @@ fn placeholder_isin(symbol: &str) -> String {
     let digest = hasher.finalize();
     let hex: String = digest.iter().map(|b| format!("{b:02X}")).collect();
     format!("ZZ{}", &hex[..10])
+}
+
+/// Rounds an f64 price (from Yahoo's JSON, via DailyBar) to 2 decimal
+/// places before it becomes a Decimal or a display string — the same fix
+/// applied to YahooFinanceProvider::f64_to_decimal, needed again here since
+/// OHLC bars take a separate path (fetch_daily_history_1y) from the plain
+/// quote (fetch_quote). Without this, a raw f64 tail like
+/// 761.4500122070313 propagates straight into stored prices and the
+/// candlestick chart. A stock price has no meaningful precision beyond the
+/// paisa, whatever produced the extra digits upstream.
+fn round_price(v: f64) -> Decimal {
+    Decimal::from_str(&v.to_string()).unwrap_or(Decimal::ZERO).round_dp(2)
 }
 
 #[tauri::command]
@@ -191,17 +213,16 @@ async fn backfill_history(state: State<'_, AppState>, symbol: String) -> Result<
         .map_err(|e| e.to_string())?;
 
     for bar in &bars {
-        let to_decimal = |v: f64| Decimal::from_str(&v.to_string()).map_err(|e| e.to_string());
         state
             .prices
             .upsert_ohlc_bar(
                 instrument.id,
                 pm_domain::repositories::OhlcBar {
                     date: bar.date,
-                    open: to_decimal(bar.open)?,
-                    high: to_decimal(bar.high)?,
-                    low: to_decimal(bar.low)?,
-                    close: to_decimal(bar.close)?,
+                    open: round_price(bar.open),
+                    high: round_price(bar.high),
+                    low: round_price(bar.low),
+                    close: round_price(bar.close),
                     volume: Some(bar.volume as i64),
                 },
             )
@@ -309,10 +330,10 @@ async fn import_holdings_csv(state: State<'_, AppState>, portfolio_id: String, c
                         for bar in &bars {
                             let ohlc = pm_domain::repositories::OhlcBar {
                                 date: bar.date,
-                                open: Decimal::from_str(&bar.open.to_string()).unwrap_or(Decimal::ZERO),
-                                high: Decimal::from_str(&bar.high.to_string()).unwrap_or(Decimal::ZERO),
-                                low: Decimal::from_str(&bar.low.to_string()).unwrap_or(Decimal::ZERO),
-                                close: Decimal::from_str(&bar.close.to_string()).unwrap_or(Decimal::ZERO),
+                                open: round_price(bar.open),
+                                high: round_price(bar.high),
+                                low: round_price(bar.low),
+                                close: round_price(bar.close),
                                 volume: Some(bar.volume as i64),
                             };
                             let _ = state.prices.upsert_ohlc_bar(instrument.id, ohlc).await;
@@ -447,38 +468,42 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Resu
             .map_err(|e| e.to_string())?;
 
         // Day change: compare today's latest price against the most recent
-        // *prior* trading day's close in price_history. Looking back 10
-        // calendar days (not just "yesterday") covers weekends/holidays
-        // where the previous trading day isn't literally yesterday.
-        let day_change_pct = if let Some(current) = ltp {
-            let today = chrono::Utc::now().date_naive();
-            let window_start = today - chrono::Duration::days(10);
-            let series = state
-                .prices
-                .daily_series(h.instrument_id, window_start, today)
-                .await
-                .map_err(|e| e.to_string())?;
-            // series is ordered by date ascending; the previous close is
-            // the last entry strictly before today, if one exists.
-            series
-                .iter()
-                .rev()
-                .find(|(date, _)| *date < today)
-                .and_then(|(_, prev_close)| {
-                    if prev_close.is_zero() {
-                        None
-                    } else {
-                        // round_dp(6): same lesson as the avg_cost bug —
-                        // an un-rounded Decimal division can produce a
-                        // 20+ digit repeating decimal; 6 dp is far more
-                        // precision than a percentage display needs.
-                        let pct = ((current - *prev_close) / *prev_close).round_dp(6);
-                        pct.to_string().parse::<f64>().ok()
-                    }
-                })
-        } else {
-            None
+        // *prior* trading day's close — see compute_day_change_pct, shared
+        // with get_market_snapshot.
+        let day_change_pct = match ltp {
+            Some(current) => compute_day_change_pct(&state, h.instrument_id, current).await?,
+            None => None,
         };
+
+        // Years held: from the earliest Buy of this stock in this
+        // portfolio to today. CAGR and the simple-interest benchmark both
+        // need this; day_change_pct above does not, which is why it's
+        // computed separately above rather than folded in here.
+        let ledger = state
+            .transactions
+            .list_for_instrument(portfolio_id, h.instrument_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let earliest_buy = ledger
+            .iter()
+            .filter(|t| matches!(t.transaction_type, TransactionType::Buy | TransactionType::SipInstallment))
+            .map(|t| t.trade_date)
+            .min();
+
+        let today = chrono::Utc::now().date_naive();
+        let years_held = earliest_buy.map(|d| (today - d).num_days() as f64 / 365.25).filter(|y| *y > 0.0);
+
+        let invested_value = h.avg_cost.to_string().parse::<f64>().unwrap_or(0.0) * h.quantity.to_string().parse::<f64>().unwrap_or(0.0);
+        let cagr_pct = match (years_held, ltp) {
+            (Some(years), Some(price)) => {
+                let final_value = h.market_value(price).to_string().parse::<f64>().unwrap_or(0.0);
+                pm_domain::analytics::cagr(invested_value, final_value, years).map(|r| r * 100.0)
+            }
+            _ => None,
+        };
+        let simple_interest_value_at_9_5_pct = years_held
+            .map(|years| pm_domain::analytics::simple_interest_value(invested_value, 0.095, years))
+            .map(|v| format!("{v:.2}"));
 
         views.push(HoldingView {
             symbol: instrument.symbol,
@@ -489,6 +514,9 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Resu
             market_value: ltp.map(|p| h.market_value(p).to_string()),
             unrealized_pnl: ltp.map(|p| h.unrealized_pnl(p).to_string()),
             day_change_pct,
+            cagr_pct,
+            simple_interest_value_at_9_5_pct,
+            years_held,
         });
     }
     Ok(views)
@@ -553,6 +581,37 @@ async fn refresh_prices(state: State<'_, AppState>, portfolio_id: String) -> Res
     Ok(RefreshPricesResult { updated, failed })
 }
 
+/// Shared by list_holdings and get_market_snapshot — both need "% change
+/// vs. the last trading day's close" for the same instrument, and this was
+/// written inline in list_holdings first; factored out here rather than
+/// copy-pasted a second time, given how many of this project's earlier
+/// bugs came from exactly that kind of drift between near-duplicate logic.
+async fn compute_day_change_pct(
+    state: &State<'_, AppState>,
+    instrument_id: Uuid,
+    current: Decimal,
+) -> Result<Option<f64>, String> {
+    let today = chrono::Utc::now().date_naive();
+    let window_start = today - chrono::Duration::days(10);
+    let series = state
+        .prices
+        .daily_series(instrument_id, window_start, today)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(series
+        .iter()
+        .rev()
+        .find(|(date, _)| *date < today)
+        .and_then(|(_, prev_close)| {
+            if prev_close.is_zero() {
+                None
+            } else {
+                let pct = ((current - *prev_close) / *prev_close).round_dp(6);
+                pct.to_string().parse::<f64>().ok()
+            }
+        }))
+}
+
 #[derive(Serialize)]
 struct MarketSnapshotView {
     symbol: String,
@@ -562,6 +621,7 @@ struct MarketSnapshotView {
     week52_high: Option<String>,
     week52_low: Option<String>,
     volume: Option<u64>,
+    day_change_pct: Option<f64>,
 }
 
 /// Live quote for any tracked instrument, regardless of whether it's
@@ -578,6 +638,7 @@ async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Resu
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
     let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
     let quote = state.market_data.fetch_quote(&yahoo_symbol).await.map_err(|e| e.to_string())?;
+    let day_change_pct = compute_day_change_pct(&state, instrument.id, quote.price).await?;
 
     Ok(MarketSnapshotView {
         symbol: instrument.symbol,
@@ -587,6 +648,7 @@ async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Resu
         week52_high: quote.week52_high.map(|d| d.to_string()),
         week52_low: quote.week52_low.map(|d| d.to_string()),
         volume: quote.volume,
+        day_change_pct,
     })
 }
 
