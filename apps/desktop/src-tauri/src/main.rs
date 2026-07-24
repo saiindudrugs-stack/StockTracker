@@ -22,10 +22,14 @@ use pm_domain::repositories::{
     TransactionRepository,
 };
 use pm_domain::value_objects::{Currency, Isin, Money};
-use pm_infrastructure::market_data::{yahoo_finance::YahooFinanceProvider, MarketDataProvider};
+use pm_infrastructure::market_data::{
+    amfi::{AmfiProvider, MutualFundDataSource},
+    yahoo_finance::YahooFinanceProvider,
+    MarketDataProvider,
+};
 use pm_infrastructure::sqlite::{
-    SqliteAlertRuleRepository, SqliteHoldingRepository, SqliteInstrumentRepository, SqlitePool,
-    SqlitePortfolioRepository, SqlitePriceRepository, SqliteTransactionRepository,
+    SqliteAlertRuleRepository, SqliteHoldingRepository, SqliteInstrumentRepository, SqliteMfSchemeCache,
+    SqlitePool, SqlitePortfolioRepository, SqlitePriceRepository, SqliteTransactionRepository,
 };
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -44,6 +48,8 @@ struct AppState {
     prices: Arc<SqlitePriceRepository>,
     alert_rules: Arc<SqliteAlertRuleRepository>,
     market_data: Arc<YahooFinanceProvider>,
+    mf_scheme_cache: Arc<SqliteMfSchemeCache>,
+    mf_data_source: Arc<AmfiProvider>,
 }
 
 #[derive(Serialize)]
@@ -186,6 +192,7 @@ async fn ensure_instrument_tracked(state: &State<'_, AppState>, symbol: &str, ex
         asset_class: AssetClass::Equity,
         exchange: exchange.trim().to_uppercase(),
         sector: None,
+        display_name: None,
     };
     state.instruments.upsert(&instrument).await.map_err(|e| e.to_string())?;
     Ok(instrument)
@@ -398,6 +405,7 @@ async fn import_holdings_csv(state: State<'_, AppState>, portfolio_id: String, c
                         asset_class: AssetClass::Equity,
                         exchange,
                         sector: None,
+                        display_name: None,
                     };
                     state.instruments.upsert(&instrument).await.map_err(|e| e.to_string())?;
                     // Best-effort: a newly-imported ticker otherwise has no
@@ -527,6 +535,78 @@ async fn get_dashboard_summary(state: State<'_, AppState>, portfolio_id: String)
 }
 
 #[tauri::command]
+struct HoldingMetrics {
+    ltp: Option<Decimal>,
+    previous_close: Option<Decimal>,
+    day_change_pct: Option<f64>,
+    cagr_pct: Option<f64>,
+    simple_interest_value: Option<String>,
+    years_held: Option<f64>,
+    market_value: Option<String>,
+    unrealized_pnl: Option<String>,
+}
+
+/// Shared by list_holdings (equities) and list_mutual_funds — both need
+/// "current price vs. previous close, years held since first buy, CAGR,
+/// and the simple-interest benchmark" for a holding, and this was written
+/// once for equities first; factored out here rather than copy-pasted a
+/// second time for funds, given how many of this project's earlier bugs
+/// came from exactly that kind of near-duplicate drift.
+async fn compute_holding_metrics(
+    state: &State<'_, AppState>,
+    portfolio_id: Uuid,
+    h: &Holding,
+    si_rate: f64,
+) -> Result<HoldingMetrics, String> {
+    let ltp = state.prices.latest_price(h.instrument_id).await.map_err(|e| e.to_string())?;
+    let previous_close = find_previous_close(state, h.instrument_id).await?;
+    let day_change_pct = match (ltp, previous_close) {
+        (Some(current), Some(prev)) if !prev.is_zero() => {
+            let pct = ((current - prev) / prev).round_dp(6);
+            pct.to_string().parse::<f64>().ok()
+        }
+        _ => None,
+    };
+
+    let ledger = state
+        .transactions
+        .list_for_instrument(portfolio_id, h.instrument_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let earliest_buy = ledger
+        .iter()
+        .filter(|t| matches!(t.transaction_type, TransactionType::Buy | TransactionType::SipInstallment))
+        .map(|t| t.trade_date)
+        .min();
+
+    let today = ist_today();
+    let years_held = earliest_buy.map(|d| (today - d).num_days() as f64 / 365.25).filter(|y| *y > 0.0);
+
+    let invested_value = h.avg_cost.to_string().parse::<f64>().unwrap_or(0.0) * h.quantity.to_string().parse::<f64>().unwrap_or(0.0);
+    let cagr_pct = match (years_held, ltp) {
+        (Some(years), Some(price)) => {
+            let final_value = h.market_value(price).to_string().parse::<f64>().unwrap_or(0.0);
+            pm_domain::analytics::cagr(invested_value, final_value, years).map(|r| r * 100.0)
+        }
+        _ => None,
+    };
+    let simple_interest_value = years_held
+        .map(|years| pm_domain::analytics::simple_interest_value(invested_value, si_rate, years))
+        .map(|v| format!("{v:.2}"));
+
+    Ok(HoldingMetrics {
+        ltp,
+        previous_close,
+        day_change_pct,
+        cagr_pct,
+        simple_interest_value,
+        years_held,
+        market_value: ltp.map(|p| h.market_value(p).to_string()),
+        unrealized_pnl: ltp.map(|p| h.unrealized_pnl(p).to_string()),
+    })
+}
+
+#[tauri::command]
 async fn list_holdings(state: State<'_, AppState>, portfolio_id: String, si_rate_pct: Option<f64>) -> Result<Vec<HoldingView>, String> {
     // Defaults to 9.5% (the original hardcoded value) when the frontend
     // doesn't pass one — keeps existing behavior for anyone not using the
@@ -546,68 +626,28 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String, si_rate
             .get(h.instrument_id)
             .await
             .map_err(|e| e.to_string())?;
-        let ltp = state
-            .prices
-            .latest_price(h.instrument_id)
-            .await
-            .map_err(|e| e.to_string())?;
+        // Mutual funds live on their own screen — see list_mutual_funds —
+        // so they're deliberately excluded here rather than shown mixed in
+        // with equities, per the explicit "don't mix them" requirement.
+        if instrument.asset_class == AssetClass::MutualFund {
+            continue;
+        }
 
-        // Day change: compare today's latest price against the most recent
-        // *prior* trading day's close. previous_close is fetched once via
-        // the shared helper and day_change_pct is derived from that same
-        // value shown in its own column, so the two can never disagree.
-        let previous_close = find_previous_close(&state, h.instrument_id).await?;
-        let day_change_pct = match (ltp, previous_close) {
-            (Some(current), Some(prev)) if !prev.is_zero() => {
-                let pct = ((current - prev) / prev).round_dp(6);
-                pct.to_string().parse::<f64>().ok()
-            }
-            _ => None,
-        };
-
-        // Years held: from the earliest Buy of this stock in this
-        // portfolio to today. CAGR and the simple-interest benchmark both
-        // need this; day_change_pct above does not, which is why it's
-        // computed separately above rather than folded in here.
-        let ledger = state
-            .transactions
-            .list_for_instrument(portfolio_id, h.instrument_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let earliest_buy = ledger
-            .iter()
-            .filter(|t| matches!(t.transaction_type, TransactionType::Buy | TransactionType::SipInstallment))
-            .map(|t| t.trade_date)
-            .min();
-
-        let today = ist_today();
-        let years_held = earliest_buy.map(|d| (today - d).num_days() as f64 / 365.25).filter(|y| *y > 0.0);
-
-        let invested_value = h.avg_cost.to_string().parse::<f64>().unwrap_or(0.0) * h.quantity.to_string().parse::<f64>().unwrap_or(0.0);
-        let cagr_pct = match (years_held, ltp) {
-            (Some(years), Some(price)) => {
-                let final_value = h.market_value(price).to_string().parse::<f64>().unwrap_or(0.0);
-                pm_domain::analytics::cagr(invested_value, final_value, years).map(|r| r * 100.0)
-            }
-            _ => None,
-        };
-        let simple_interest_value_at_9_5_pct = years_held
-            .map(|years| pm_domain::analytics::simple_interest_value(invested_value, si_rate, years))
-            .map(|v| format!("{v:.2}"));
+        let m = compute_holding_metrics(&state, portfolio_id, &h, si_rate).await?;
 
         views.push(HoldingView {
             symbol: instrument.symbol,
             sector: instrument.sector,
             quantity: h.quantity.to_string(),
             avg_cost: h.avg_cost.to_string(),
-            last_price: ltp.map(|p| p.to_string()),
-            previous_close: previous_close.map(|p| p.to_string()),
-            market_value: ltp.map(|p| h.market_value(p).to_string()),
-            unrealized_pnl: ltp.map(|p| h.unrealized_pnl(p).to_string()),
-            day_change_pct,
-            cagr_pct,
-            simple_interest_value_at_9_5_pct,
-            years_held,
+            last_price: m.ltp.map(|p| p.to_string()),
+            previous_close: m.previous_close.map(|p| p.to_string()),
+            market_value: m.market_value,
+            unrealized_pnl: m.unrealized_pnl,
+            day_change_pct: m.day_change_pct,
+            cagr_pct: m.cagr_pct,
+            simple_interest_value_at_9_5_pct: m.simple_interest_value,
+            years_held: m.years_held,
         });
     }
     Ok(views)
@@ -1071,6 +1111,307 @@ async fn delete_alert_rule(state: State<'_, AppState>, id: String) -> Result<(),
     state.alert_rules.delete(id).await.map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+struct MfRefreshResult {
+    scheme_count: i64,
+}
+
+/// Wholesale-replaces the disposable AMFI scheme cache with today's file —
+/// "clear the cache, then load the latest," exactly as requested. This is
+/// the ~30,000+ row master list used only for the search-to-add picker; it
+/// is never consulted for a fund the user already holds (that NAV history
+/// lives permanently in price_history, untouched by this refresh).
+#[tauri::command]
+async fn refresh_mf_scheme_cache(state: State<'_, AppState>) -> Result<MfRefreshResult, String> {
+    let rows = state.mf_data_source.fetch_all_schemes().await.map_err(|e| e.to_string())?;
+    let count = rows.len() as i64;
+    state.mf_scheme_cache.replace_all(rows).await.map_err(|e| e.to_string())?;
+    Ok(MfRefreshResult { scheme_count: count })
+}
+
+#[derive(Serialize)]
+struct MfSchemeSearchResultView {
+    scheme_code: String,
+    scheme_name: String,
+    category: String,
+    amc_name: String,
+    nav: String,
+    nav_date: String,
+}
+
+/// Type-to-search over the cached scheme master list — the picker that
+/// replaces manually typing an AMFI Scheme Code. Returns at most 25
+/// matches so a broad query doesn't flood the UI.
+#[tauri::command]
+async fn search_mf_schemes(state: State<'_, AppState>, query: String) -> Result<Vec<MfSchemeSearchResultView>, String> {
+    if query.trim().len() < 2 {
+        return Ok(Vec::new()); // avoid a near-unfiltered scan on a 1-character query
+    }
+    let rows = state.mf_scheme_cache.search_by_name(&query, 25).await.map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| MfSchemeSearchResultView {
+            scheme_code: r.scheme_code,
+            scheme_name: r.scheme_name,
+            category: r.category,
+            amc_name: r.amc_name,
+            nav: r.nav.to_string(),
+            nav_date: r.nav_date.format("%Y-%m-%d").to_string(),
+        })
+        .collect())
+}
+
+/// Registers a fund the user picked from the search results as a trackable
+/// instrument (mirrors add_instrument for equities) and seeds its first
+/// NAV data point into the *permanent* price_history — never the
+/// disposable cache — so a chart/return calc has something to start from
+/// immediately, without waiting for the next daily refresh.
+#[tauri::command]
+async fn add_mutual_fund(state: State<'_, AppState>, scheme_code: String) -> Result<InstrumentView, String> {
+    if let Some(existing) = state.instruments.find_by_symbol(&scheme_code).await.map_err(|e| e.to_string())? {
+        return Ok(InstrumentView { symbol: existing.symbol, sector: existing.sector });
+    }
+    let scheme = state
+        .mf_scheme_cache
+        .get_by_code(&scheme_code)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("scheme code '{scheme_code}' not found — try Refresh Fund List first"))?;
+
+    let isin = scheme
+        .isin_growth
+        .clone()
+        .or_else(|| scheme.isin_div_reinvest.clone())
+        .unwrap_or_else(|| placeholder_isin(&scheme_code));
+    let instrument = Instrument {
+        id: Uuid::new_v4(),
+        isin: Isin::parse(&isin).map_err(|e| e.to_string())?,
+        symbol: scheme_code.clone(),
+        asset_class: AssetClass::MutualFund,
+        exchange: "AMFI".to_string(),
+        sector: Some(scheme.category.clone()),
+        display_name: Some(scheme.scheme_name.clone()),
+    };
+    state.instruments.upsert(&instrument).await.map_err(|e| e.to_string())?;
+    state
+        .prices
+        .upsert_daily_bar(instrument.id, scheme.nav_date, scheme.nav)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(InstrumentView { symbol: instrument.symbol, sector: instrument.sector })
+}
+
+#[derive(Serialize)]
+struct MfHoldingView {
+    scheme_code: String,
+    scheme_name: String,
+    category: Option<String>,
+    units: String,
+    avg_nav: String,
+    current_nav: Option<String>,
+    previous_nav: Option<String>,
+    nav_change_pct: Option<f64>,
+    market_value: Option<String>,
+    unrealized_pnl: Option<String>,
+    cagr_pct: Option<f64>,
+    simple_interest_value: Option<String>,
+    years_held: Option<f64>,
+}
+
+/// Mutual funds, listed entirely separately from list_holdings — this is
+/// the only place MutualFund-asset-class holdings ever appear, per the
+/// explicit "don't mix them" requirement.
+#[tauri::command]
+async fn list_mutual_funds(state: State<'_, AppState>, portfolio_id: String, si_rate_pct: Option<f64>) -> Result<Vec<MfHoldingView>, String> {
+    let si_rate = si_rate_pct.unwrap_or(9.5) / 100.0;
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let holdings = state.holdings.list_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())?;
+
+    let mut views = Vec::new();
+    for h in holdings {
+        let instrument = state.instruments.get(h.instrument_id).await.map_err(|e| e.to_string())?;
+        if instrument.asset_class != AssetClass::MutualFund {
+            continue;
+        }
+        let m = compute_holding_metrics(&state, portfolio_id, &h, si_rate).await?;
+        views.push(MfHoldingView {
+            scheme_code: instrument.symbol,
+            scheme_name: instrument.display_name.unwrap_or_default(),
+            category: instrument.sector,
+            units: h.quantity.to_string(),
+            avg_nav: h.avg_cost.to_string(),
+            current_nav: m.ltp.map(|p| p.to_string()),
+            previous_nav: m.previous_close.map(|p| p.to_string()),
+            nav_change_pct: m.day_change_pct,
+            market_value: m.market_value,
+            unrealized_pnl: m.unrealized_pnl,
+            cagr_pct: m.cagr_pct,
+            simple_interest_value: m.simple_interest_value,
+            years_held: m.years_held,
+        });
+    }
+    Ok(views)
+}
+
+/// Exports every column shown on the Mutual Funds screen as CSV text, same
+/// "reuse the list command directly" guarantee as export_holdings_csv.
+#[tauri::command]
+async fn export_mf_csv(state: State<'_, AppState>, portfolio_id: String, si_rate_pct: Option<f64>) -> Result<String, String> {
+    let funds = list_mutual_funds(state.clone(), portfolio_id, si_rate_pct).await?;
+    let mut out = String::from(
+        "SchemeCode,SchemeName,Category,Units,AvgNAV,PreviousNAV,CurrentNAV,NAVChangePct,MarketValue,UnrealizedPnl,CAGRPct,SimpleInterestValue,YearsHeld\n",
+    );
+    for f in &funds {
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            f.scheme_code,
+            f.scheme_name,
+            f.category.clone().unwrap_or_default(),
+            f.units,
+            f.avg_nav,
+            f.previous_nav.clone().unwrap_or_default(),
+            f.current_nav.clone().unwrap_or_default(),
+            f.nav_change_pct.map(|p| format!("{:.4}", p * 100.0)).unwrap_or_default(),
+            f.market_value.clone().unwrap_or_default(),
+            f.unrealized_pnl.clone().unwrap_or_default(),
+            f.cagr_pct.map(|p| format!("{p:.2}")).unwrap_or_default(),
+            f.simple_interest_value.clone().unwrap_or_default(),
+            f.years_held.map(|y| format!("{y:.2}")).unwrap_or_default(),
+        ));
+    }
+    Ok(out)
+}
+
+/// Parses "SchemeCode,Units,BuyNAV,BuyDate" rows — the AMFI Scheme Code is
+/// required (not the fund name, for the same reason add_mutual_fund and
+/// search_mf_schemes exist: fund names collide constantly across
+/// Direct/Regular and Growth/IDCW variants). A scheme not present in the
+/// cache fails that row with a clear "run Refresh Fund List first" message
+/// rather than guessing.
+#[tauri::command]
+async fn import_mf_csv(state: State<'_, AppState>, portfolio_id: String, csv_content: String) -> Result<ImportCsvResult, String> {
+    let portfolio_id_uuid = parse_portfolio_id(&portfolio_id)?;
+    let default_buy_date = ist_today() - chrono::Duration::days(365);
+
+    let mut rows_out = Vec::new();
+    let mut imported = 0usize;
+    let mut failed = 0usize;
+
+    let lines: Vec<&str> = csv_content.lines().collect();
+    let data_lines = if lines.first().map(|l| l.to_uppercase().starts_with("SCHEMECODE")).unwrap_or(false) {
+        &lines[1..]
+    } else {
+        &lines[..]
+    };
+
+    for (i, line) in data_lines.iter().enumerate() {
+        let row_number = i + 2;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let cols: Vec<&str> = line.split(',').map(|c| c.trim()).collect();
+        if cols.len() < 3 {
+            failed += 1;
+            rows_out.push(ImportRowResult { row_number, symbol: line.to_string(), status: "expected at least SchemeCode,Units,BuyNAV".to_string() });
+            continue;
+        }
+        let scheme_code = cols[0].to_string();
+
+        let outcome: Result<(), String> = async {
+            let units = Decimal::from_str(cols[1]).map_err(|e| format!("bad units: {e}"))?;
+            let buy_nav = Decimal::from_str(cols[2]).map_err(|e| format!("bad NAV: {e}"))?;
+            let buy_date = match cols.get(3).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| format!("bad date '{s}': {e}"))?,
+                None => default_buy_date,
+            };
+
+            let instrument = match state.instruments.find_by_symbol(&scheme_code).await.map_err(|e| e.to_string())? {
+                Some(existing) => existing,
+                None => {
+                    let view = add_mutual_fund(state.clone(), scheme_code.clone()).await?;
+                    state
+                        .instruments
+                        .find_by_symbol(&view.symbol)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| "fund was just added but couldn't be re-fetched".to_string())?
+                }
+            };
+
+            let txn = Transaction {
+                id: Uuid::new_v4(),
+                portfolio_id: portfolio_id_uuid,
+                instrument_id: instrument.id,
+                transaction_type: TransactionType::Buy,
+                quantity: units,
+                price: Money::inr(buy_nav),
+                fees: Money::inr(Decimal::ZERO),
+                trade_date: buy_date,
+                broker_ref: None,
+                recorded_at: chrono::Utc::now(),
+            };
+            let use_case = RecordTransactionUseCase::new(state.transactions.clone(), state.holdings.clone());
+            use_case.execute(txn).await.map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        .await;
+
+        match outcome {
+            Ok(()) => {
+                imported += 1;
+                rows_out.push(ImportRowResult { row_number, symbol: scheme_code, status: "Imported".to_string() });
+            }
+            Err(e) => {
+                failed += 1;
+                rows_out.push(ImportRowResult { row_number, symbol: scheme_code, status: e });
+            }
+        }
+    }
+    Ok(ImportCsvResult { imported, failed, rows: rows_out })
+}
+
+/// Refreshes NAV for every fund actually held in this portfolio, from the
+/// (already-refreshed) scheme cache into permanent price_history — mirrors
+/// refresh_prices for equities. Does NOT refresh the scheme cache itself;
+/// call refresh_mf_scheme_cache first (the UI does this as one "Refresh"
+/// action, but they're separate commands since one is a network fetch of
+/// the whole market and the other is just copying cached values forward).
+#[tauri::command]
+async fn refresh_mf_nav(state: State<'_, AppState>, portfolio_id: String) -> Result<RefreshPricesResult, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let holdings = state.holdings.list_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())?;
+
+    let mut updated = Vec::new();
+    let mut failed = Vec::new();
+    for h in holdings {
+        let instrument = match state.instruments.get(h.instrument_id).await {
+            Ok(i) if i.asset_class == AssetClass::MutualFund => i,
+            Ok(_) => continue, // not a fund, skip silently — this command only touches MFs
+            Err(e) => {
+                failed.push(RefreshFailure { symbol: h.instrument_id.to_string(), reason: e.to_string() });
+                continue;
+            }
+        };
+        match state.mf_scheme_cache.get_by_code(&instrument.symbol).await {
+            Ok(Some(scheme)) => {
+                if let Err(e) = state.prices.upsert_daily_bar(instrument.id, scheme.nav_date, scheme.nav).await {
+                    failed.push(RefreshFailure { symbol: instrument.symbol, reason: e.to_string() });
+                } else {
+                    updated.push(instrument.symbol);
+                }
+            }
+            Ok(None) => failed.push(RefreshFailure {
+                symbol: instrument.symbol,
+                reason: "not in scheme cache — try Refresh Fund List first".to_string(),
+            }),
+            Err(e) => failed.push(RefreshFailure { symbol: instrument.symbol, reason: e.to_string() }),
+        }
+    }
+    Ok(RefreshPricesResult { updated, failed })
+}
+
 /// Removes one stock's row from Holdings for one portfolio — deletes all
 /// of that instrument's transactions in this portfolio plus the cached
 /// snapshot, so it stops showing up in list_holdings. This does NOT delete
@@ -1261,6 +1602,7 @@ async fn seed_demo_data_if_first_launch(state: &AppState) -> Result<(), String> 
         asset_class: AssetClass::Equity,
         exchange: "NSE".to_string(),
         sector: Some("Energy".to_string()),
+        display_name: None,
     };
     let tcs = Instrument {
         id: Uuid::new_v4(),
@@ -1269,6 +1611,7 @@ async fn seed_demo_data_if_first_launch(state: &AppState) -> Result<(), String> 
         asset_class: AssetClass::Equity,
         exchange: "NSE".to_string(),
         sector: Some("IT".to_string()),
+        display_name: None,
     };
 
     state.instruments.upsert(&reliance).await.map_err(|e| e.to_string())?;
@@ -1340,8 +1683,10 @@ fn main() {
                 holdings: Arc::new(SqliteHoldingRepository::new(pool.clone())),
                 instruments: Arc::new(SqliteInstrumentRepository::new(pool.clone())),
                 prices: Arc::new(SqlitePriceRepository::new(pool.clone())),
-                alert_rules: Arc::new(SqliteAlertRuleRepository::new(pool)),
+                alert_rules: Arc::new(SqliteAlertRuleRepository::new(pool.clone())),
                 market_data: Arc::new(YahooFinanceProvider::new()),
+                mf_scheme_cache: Arc::new(SqliteMfSchemeCache::new(pool)),
+                mf_data_source: Arc::new(AmfiProvider::new()),
             };
 
             tauri::async_runtime::block_on(seed_demo_data_if_first_launch(&state))
@@ -1375,7 +1720,14 @@ fn main() {
             export_holdings_csv,
             get_ohlc_history,
             compute_portfolio_xirr,
-            reset_all_data
+            reset_all_data,
+            refresh_mf_scheme_cache,
+            search_mf_schemes,
+            add_mutual_fund,
+            list_mutual_funds,
+            refresh_mf_nav,
+            import_mf_csv,
+            export_mf_csv
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

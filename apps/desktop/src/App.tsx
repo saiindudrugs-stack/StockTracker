@@ -3,6 +3,7 @@ import { NavRail } from "./components/NavRail";
 import { PortfolioTabs } from "./components/PortfolioTabs";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { HoldingsScreen } from "./screens/HoldingsScreen";
+import { MutualFundsScreen } from "./screens/MutualFundsScreen";
 import { WatchlistScreen } from "./screens/WatchlistScreen";
 import { AnalysisScreen } from "./screens/AnalysisScreen";
 import { ChartScreen } from "./screens/ChartScreen";
@@ -50,7 +51,7 @@ export default function App() {
   // a ticker before buying shouldn't require setting up a family portfolio
   // first. Dashboard, Holdings, and Analysis need an active portfolio_id
   // since all three are about *owned* positions.
-  const needsPortfolio = screen === "dashboard" || screen === "holdings" || screen === "analysis";
+  const needsPortfolio = screen === "dashboard" || screen === "holdings" || screen === "analysis" || screen === "mutual-funds";
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", display: "flex", height: "100vh" }}>
@@ -87,6 +88,7 @@ export default function App() {
             <>
               {screen === "dashboard" && activePortfolioId && <DashboardScreen portfolioId={activePortfolioId} />}
               {screen === "holdings" && activePortfolioId && <HoldingsScreen portfolioId={activePortfolioId} />}
+              {screen === "mutual-funds" && activePortfolioId && <MutualFundsScreen portfolioId={activePortfolioId} />}
               {screen === "watchlist" && <WatchlistScreen />}
               {screen === "analysis" && activePortfolioId && <AnalysisScreen portfolioId={activePortfolioId} />}
               {screen === "chart" && <ChartScreen />}

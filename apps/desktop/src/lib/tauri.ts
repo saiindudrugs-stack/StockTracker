@@ -6,6 +6,8 @@ import type {
   HoldingView,
   InstrumentView,
   MarketSnapshotView,
+  MfHoldingView,
+  MfSchemeSearchResultView,
   PortfolioAnalysisView,
   PortfolioView,
   PriceHistoryPoint,
@@ -90,4 +92,22 @@ export const api = {
     invoke<void>("create_alert_rule", { portfolioId, symbol, condition, thresholdPrice }),
   listAlertRules: (portfolioId: string) => invoke<AlertRuleView[]>("list_alert_rules", { portfolioId }),
   deleteAlertRule: (id: string) => invoke<void>("delete_alert_rule", { id }),
+
+  // Mutual funds — a fully separate data path from equities. The scheme
+  // cache (searchMfSchemes reads from it) is disposable and wholesale-
+  // replaced by refreshMfSchemeCache; it holds no data about what you
+  // actually own. What you own lives in the same portfolio/holding tables
+  // as equities, just filtered to asset_class = mutual_fund server-side.
+  refreshMfSchemeCache: () => invoke<{ scheme_count: number }>("refresh_mf_scheme_cache"),
+  searchMfSchemes: (query: string) => invoke<MfSchemeSearchResultView[]>("search_mf_schemes", { query }),
+  addMutualFund: (schemeCode: string) => invoke<InstrumentView>("add_mutual_fund", { schemeCode }),
+  listMutualFunds: (portfolioId: string, siRatePct?: number) =>
+    invoke<MfHoldingView[]>("list_mutual_funds", { portfolioId, siRatePct }),
+  refreshMfNav: (portfolioId: string) => invoke<RefreshPricesResult>("refresh_mf_nav", { portfolioId }),
+  importMfCsv: (portfolioId: string, csvContent: string) =>
+    invoke<{ imported: number; failed: number; rows: { row_number: number; symbol: string; status: string }[] }>(
+      "import_mf_csv",
+      { portfolioId, csvContent }
+    ),
+  exportMfCsv: (portfolioId: string, siRatePct?: number) => invoke<string>("export_mf_csv", { portfolioId, siRatePct }),
 };

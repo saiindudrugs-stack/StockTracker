@@ -128,4 +128,29 @@ export interface AlertRuleView {
   current_price: string | null;
 }
 
-export type ScreenId = "dashboard" | "holdings" | "watchlist" | "analysis" | "chart" | "settings";
+export interface MfSchemeSearchResultView {
+  scheme_code: string;
+  scheme_name: string;
+  category: string;
+  amc_name: string;
+  nav: string;
+  nav_date: string;
+}
+
+export interface MfHoldingView {
+  scheme_code: string;
+  scheme_name: string;
+  category: string | null;
+  units: string;
+  avg_nav: string;
+  current_nav: string | null;
+  previous_nav: string | null;
+  nav_change_pct: number | null;
+  market_value: string | null;
+  unrealized_pnl: string | null;
+  cagr_pct: number | null;
+  simple_interest_value: string | null;
+  years_held: number | null;
+}
+
+export type ScreenId = "dashboard" | "holdings" | "mutual-funds" | "watchlist" | "analysis" | "chart" | "settings";

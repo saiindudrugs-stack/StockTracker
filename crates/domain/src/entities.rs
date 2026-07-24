@@ -24,10 +24,19 @@ pub enum AssetClass {
 pub struct Instrument {
     pub id: Uuid,
     pub isin: Isin,
+    /// For equities, this IS the display symbol (e.g. "RELIANCE"). For
+    /// mutual funds, this is the stable AMFI Scheme Code (e.g. "119551") —
+    /// unique and unambiguous where the fund's own name isn't (AMFI's
+    /// daily NAV file routinely lists a dozen near-identical variants of
+    /// the same fund: Direct/Regular, Growth/IDCW, Monthly/Quarterly
+    /// payout). The human-readable name goes in display_name instead.
     pub symbol: String,
     pub asset_class: AssetClass,
     pub exchange: String,
     pub sector: Option<String>,
+    /// Populated for mutual funds (the full scheme name); left `None` for
+    /// equities, where `symbol` already serves as the display name.
+    pub display_name: Option<String>,
 }
 
 /// A transaction type. Bonus/Split carry a ratio instead of a price.

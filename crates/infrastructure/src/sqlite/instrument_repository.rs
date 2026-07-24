@@ -39,14 +39,14 @@ fn str_to_asset_class(s: &str) -> Result<AssetClass, RepositoryError> {
     })
 }
 
-type InstrumentRow = (String, String, String, String, String, Option<String>);
+type InstrumentRow = (String, String, String, String, String, Option<String>, Option<String>);
 
 fn row_to_instrument(row: &rusqlite::Row) -> rusqlite::Result<InstrumentRow> {
-    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
 }
 
 fn parse_instrument(row: InstrumentRow) -> Result<Instrument, RepositoryError> {
-    let (id, isin, symbol, asset_class, exchange, sector) = row;
+    let (id, isin, symbol, asset_class, exchange, sector, display_name) = row;
     let parse_err = |ctx: &str, e: String| RepositoryError::Storage(format!("corrupt {ctx} in DB: {e}"));
     Ok(Instrument {
         id: Uuid::parse_str(&id).map_err(|e| parse_err("id", e.to_string()))?,
@@ -55,8 +55,11 @@ fn parse_instrument(row: InstrumentRow) -> Result<Instrument, RepositoryError> {
         asset_class: str_to_asset_class(&asset_class)?,
         exchange,
         sector,
+        display_name,
     })
 }
+
+const SELECT_COLS: &str = "id, isin, symbol, asset_class, exchange, sector, display_name";
 
 #[async_trait]
 impl InstrumentRepository for SqliteInstrumentRepository {
@@ -65,12 +68,12 @@ impl InstrumentRepository for SqliteInstrumentRepository {
         self.pool
             .with_conn(move |conn| {
                 conn.execute(
-                    r#"INSERT INTO instrument (id, isin, symbol, asset_class, exchange, sector)
-                       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    r#"INSERT INTO instrument (id, isin, symbol, asset_class, exchange, sector, display_name)
+                       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                        ON CONFLICT(id) DO UPDATE SET
                          isin = excluded.isin, symbol = excluded.symbol,
                          asset_class = excluded.asset_class, exchange = excluded.exchange,
-                         sector = excluded.sector"#,
+                         sector = excluded.sector, display_name = excluded.display_name"#,
                     params![
                         instrument.id.to_string(),
                         instrument.isin.as_str(),
@@ -78,6 +81,7 @@ impl InstrumentRepository for SqliteInstrumentRepository {
                         asset_class_to_str(instrument.asset_class),
                         instrument.exchange,
                         instrument.sector,
+                        instrument.display_name,
                     ],
                 )?;
                 Ok(())
@@ -90,7 +94,7 @@ impl InstrumentRepository for SqliteInstrumentRepository {
             .pool
             .with_conn(move |conn| {
                 conn.query_row(
-                    "SELECT id, isin, symbol, asset_class, exchange, sector FROM instrument WHERE id = ?1",
+                    &format!("SELECT {SELECT_COLS} FROM instrument WHERE id = ?1"),
                     params![id.to_string()],
                     row_to_instrument,
                 )
@@ -106,7 +110,7 @@ impl InstrumentRepository for SqliteInstrumentRepository {
             .pool
             .with_conn(move |conn| {
                 conn.query_row(
-                    "SELECT id, isin, symbol, asset_class, exchange, sector FROM instrument WHERE isin = ?1",
+                    &format!("SELECT {SELECT_COLS} FROM instrument WHERE isin = ?1"),
                     params![isin],
                     row_to_instrument,
                 )
@@ -120,9 +124,7 @@ impl InstrumentRepository for SqliteInstrumentRepository {
         let rows = self
             .pool
             .with_conn(|conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id, isin, symbol, asset_class, exchange, sector FROM instrument ORDER BY symbol ASC",
-                )?;
+                let mut stmt = conn.prepare(&format!("SELECT {SELECT_COLS} FROM instrument ORDER BY symbol ASC"))?;
                 let rows = stmt
                     .query_map([], row_to_instrument)?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -154,7 +156,7 @@ impl SqliteInstrumentRepository {
             .pool
             .with_conn(move |conn| {
                 conn.query_row(
-                    "SELECT id, isin, symbol, asset_class, exchange, sector FROM instrument WHERE symbol = ?1",
+                    &format!("SELECT {SELECT_COLS} FROM instrument WHERE symbol = ?1"),
                     params![symbol],
                     row_to_instrument,
                 )
@@ -162,6 +164,24 @@ impl SqliteInstrumentRepository {
             })
             .await?;
         row.map(parse_instrument).transpose()
+    }
+
+    /// Every instrument of one asset class — used to list mutual funds
+    /// separately from equities on the Mutual Funds screen, without the
+    /// two ever mixing in the same table view.
+    pub async fn list_by_asset_class(&self, asset_class: AssetClass) -> Result<Vec<Instrument>, RepositoryError> {
+        let class_str = asset_class_to_str(asset_class);
+        let rows = self
+            .pool
+            .with_conn(move |conn| {
+                let mut stmt = conn.prepare(&format!("SELECT {SELECT_COLS} FROM instrument WHERE asset_class = ?1 ORDER BY symbol ASC"))?;
+                let rows = stmt
+                    .query_map(params![class_str], row_to_instrument)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await?;
+        rows.into_iter().map(parse_instrument).collect()
     }
 }
 
@@ -177,6 +197,19 @@ mod tests {
             asset_class: AssetClass::Equity,
             exchange: "NSE".to_string(),
             sector: Some("Energy".to_string()),
+            display_name: None,
+        }
+    }
+
+    fn sample_mf() -> Instrument {
+        Instrument {
+            id: Uuid::new_v4(),
+            isin: Isin::parse("INF209KA1AZ7").unwrap(),
+            symbol: "119551".to_string(),
+            asset_class: AssetClass::MutualFund,
+            exchange: "AMFI".to_string(),
+            sector: Some("Debt".to_string()),
+            display_name: Some("Aditya Birla Sun Life Banking & PSU Debt Fund - Direct - Growth".to_string()),
         }
     }
 
@@ -192,6 +225,18 @@ mod tests {
 
         let by_isin = repo.find_by_isin("INE002A01018").await.unwrap();
         assert_eq!(by_isin, Some(instrument));
+    }
+
+    #[tokio::test]
+    async fn mutual_fund_display_name_round_trips() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let repo = SqliteInstrumentRepository::new(pool);
+        let mf = sample_mf();
+
+        repo.upsert(&mf).await.unwrap();
+        let fetched = repo.get(mf.id).await.unwrap();
+        assert_eq!(fetched.display_name.as_deref(), Some("Aditya Birla Sun Life Banking & PSU Debt Fund - Direct - Growth"));
+        assert_eq!(fetched.symbol, "119551");
     }
 
     #[tokio::test]
@@ -226,6 +271,21 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].symbol, "RELIANCE"); // alphabetical, not insertion order
         assert_eq!(all[1].symbol, "TCS");
+    }
+
+    #[tokio::test]
+    async fn list_by_asset_class_only_returns_matching_instruments() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let repo = SqliteInstrumentRepository::new(pool);
+
+        repo.upsert(&sample()).await.unwrap(); // equity
+        repo.upsert(&sample_mf()).await.unwrap(); // mutual fund
+
+        let equities = repo.list_by_asset_class(AssetClass::Equity).await.unwrap();
+        let funds = repo.list_by_asset_class(AssetClass::MutualFund).await.unwrap();
+        assert_eq!(equities.len(), 1);
+        assert_eq!(funds.len(), 1);
+        assert_eq!(funds[0].symbol, "119551");
     }
 
     #[tokio::test]

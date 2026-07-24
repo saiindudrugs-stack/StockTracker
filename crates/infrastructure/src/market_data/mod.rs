@@ -13,6 +13,7 @@
 //! that trade-off is deliberate, not hidden.
 
 pub mod yahoo_finance;
+pub mod amfi;
 
 use async_trait::async_trait;
 use pm_domain::analytics::DailyBar;

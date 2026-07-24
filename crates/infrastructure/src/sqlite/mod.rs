@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 pub mod alert_rule_repository;
 pub mod holding_repository;
 pub mod instrument_repository;
+pub mod mf_scheme_cache;
 pub mod portfolio_repository;
 pub mod price_repository;
 pub mod transaction_repository;
@@ -21,6 +22,7 @@ pub mod transaction_repository;
 pub use alert_rule_repository::SqliteAlertRuleRepository;
 pub use holding_repository::SqliteHoldingRepository;
 pub use instrument_repository::SqliteInstrumentRepository;
+pub use mf_scheme_cache::SqliteMfSchemeCache;
 pub use portfolio_repository::SqlitePortfolioRepository;
 pub use price_repository::SqlitePriceRepository;
 pub use transaction_repository::SqliteTransactionRepository;
@@ -64,6 +66,7 @@ impl SqlitePool {
             "ALTER TABLE price_history ADD COLUMN high TEXT",
             "ALTER TABLE price_history ADD COLUMN low TEXT",
             "ALTER TABLE price_history ADD COLUMN volume INTEGER",
+            "ALTER TABLE instrument ADD COLUMN display_name TEXT",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let already_exists = matches!(&e, rusqlite::Error::SqliteFailure(_, Some(msg)) if msg.contains("duplicate column name"));
@@ -137,7 +140,8 @@ CREATE TABLE IF NOT EXISTS instrument (
     symbol TEXT NOT NULL,
     asset_class TEXT NOT NULL,
     exchange TEXT NOT NULL,
-    sector TEXT
+    sector TEXT,
+    display_name TEXT
 );
 
 CREATE TABLE IF NOT EXISTS "transaction" (
@@ -186,4 +190,21 @@ CREATE TABLE IF NOT EXISTS alert_rule (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_alert_rule_portfolio ON alert_rule(portfolio_id);
+
+-- Disposable, wholesale-replaced daily from AMFI's official NAV file —
+-- NOT a permanent record. This is the full ~30,000+ scheme master list
+-- used only for the search-to-add picker; it is never read for a fund
+-- the user actually holds (that NAV history lives in price_history,
+-- same as equities, and is never cleared).
+CREATE TABLE IF NOT EXISTS mf_scheme_cache (
+    scheme_code TEXT PRIMARY KEY,
+    scheme_name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amc_name TEXT NOT NULL,
+    isin_growth TEXT,
+    isin_div_reinvest TEXT,
+    nav TEXT NOT NULL,
+    nav_date TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mf_scheme_cache_name ON mf_scheme_cache(scheme_name);
 "#;
