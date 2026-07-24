@@ -534,7 +534,6 @@ async fn get_dashboard_summary(state: State<'_, AppState>, portfolio_id: String)
     use_case.execute(portfolio_id).await.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
 struct HoldingMetrics {
     ltp: Option<Decimal>,
     previous_close: Option<Decimal>,
