@@ -16,15 +16,15 @@ use chrono::NaiveDate;
 use pm_application::use_cases::{
     ComputeXirrUseCase, DashboardSummary, DashboardSummaryUseCase, RecordTransactionUseCase,
 };
-use pm_domain::entities::{AssetClass, Holding, Instrument, Portfolio, Transaction, TransactionType};
+use pm_domain::entities::{AlertCondition, AlertRule, AssetClass, Holding, Instrument, Portfolio, Transaction, TransactionType};
 use pm_domain::repositories::{
     HoldingRepository, InstrumentRepository, PortfolioRepository, PriceRepository, TransactionRepository,
 };
 use pm_domain::value_objects::{Currency, Isin, Money};
 use pm_infrastructure::market_data::{yahoo_finance::YahooFinanceProvider, MarketDataProvider};
 use pm_infrastructure::sqlite::{
-    SqliteHoldingRepository, SqliteInstrumentRepository, SqlitePool, SqlitePortfolioRepository,
-    SqlitePriceRepository, SqliteTransactionRepository,
+    SqliteAlertRuleRepository, SqliteHoldingRepository, SqliteInstrumentRepository, SqlitePool,
+    SqlitePortfolioRepository, SqlitePriceRepository, SqliteTransactionRepository,
 };
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -41,6 +41,7 @@ struct AppState {
     holdings: Arc<SqliteHoldingRepository>,
     instruments: Arc<SqliteInstrumentRepository>,
     prices: Arc<SqlitePriceRepository>,
+    alert_rules: Arc<SqliteAlertRuleRepository>,
     market_data: Arc<YahooFinanceProvider>,
 }
 
@@ -969,6 +970,106 @@ async fn reset_all_data(state: State<'_, AppState>) -> Result<(), String> {
     state.pool.reset_all().await.map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+struct AlertRuleView {
+    id: String,
+    symbol: String,
+    condition: String, // "stop_loss" | "target"
+    threshold_price: String,
+    triggered: bool,
+    /// Live check against the current price — computed fresh on every
+    /// list_alert_rules call rather than relying on a background poller,
+    /// since this app has no persistent background process (it only runs
+    /// while the window is open). `triggered` in the DB is the durable
+    /// "this has fired at least once" record; `is_triggered_now` is
+    /// today's read against the latest cached price.
+    is_triggered_now: bool,
+    current_price: Option<String>,
+}
+
+#[tauri::command]
+async fn create_alert_rule(
+    state: State<'_, AppState>,
+    portfolio_id: String,
+    symbol: String,
+    condition: String,
+    threshold_price: String,
+) -> Result<(), String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+    let condition = match condition.as_str() {
+        "stop_loss" => AlertCondition::StopLoss,
+        "target" => AlertCondition::Target,
+        other => return Err(format!("unknown alert condition '{other}' — expected 'stop_loss' or 'target'")),
+    };
+    let rule = AlertRule {
+        id: Uuid::new_v4(),
+        portfolio_id,
+        instrument_id: instrument.id,
+        condition,
+        threshold_price: Decimal::from_str(&threshold_price).map_err(|e| e.to_string())?,
+        triggered: false,
+    };
+    state.alert_rules.create(&rule).await.map_err(|e| e.to_string())
+}
+
+/// Lists every alert rule for a portfolio, each with a *live* trigger check
+/// against the latest cached price — this is what the Dashboard's alerts
+/// panel and the flashing-row mechanism on Holdings/Watchlist both read
+/// from. A rule already marked triggered in the DB stays marked (see the
+/// doc comment on AlertRule::triggered) even if the live price has since
+/// moved back across the threshold — dismissing it is an explicit action
+/// (delete_alert_rule), not something a price bounce should do silently.
+#[tauri::command]
+async fn list_alert_rules(state: State<'_, AppState>, portfolio_id: String) -> Result<Vec<AlertRuleView>, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let rules = state.alert_rules.list_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())?;
+
+    let mut views = Vec::with_capacity(rules.len());
+    for rule in rules {
+        let instrument = state.instruments.get(rule.instrument_id).await.map_err(|e| e.to_string())?;
+        let current_price = state.prices.latest_price(rule.instrument_id).await.map_err(|e| e.to_string())?;
+
+        let is_triggered_now = current_price
+            .map(|price| match rule.condition {
+                AlertCondition::StopLoss => price <= rule.threshold_price,
+                AlertCondition::Target => price >= rule.threshold_price,
+            })
+            .unwrap_or(false);
+
+        // Durably record the first time this fires — see the trait doc
+        // comment on mark_triggered for why this is one-way.
+        if is_triggered_now && !rule.triggered {
+            state.alert_rules.mark_triggered(rule.id).await.map_err(|e| e.to_string())?;
+        }
+
+        views.push(AlertRuleView {
+            id: rule.id.to_string(),
+            symbol: instrument.symbol,
+            condition: match rule.condition {
+                AlertCondition::StopLoss => "stop_loss".to_string(),
+                AlertCondition::Target => "target".to_string(),
+            },
+            threshold_price: rule.threshold_price.to_string(),
+            triggered: rule.triggered || is_triggered_now,
+            is_triggered_now,
+            current_price: current_price.map(|p| p.to_string()),
+        });
+    }
+    Ok(views)
+}
+
+#[tauri::command]
+async fn delete_alert_rule(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let id = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    state.alert_rules.delete(id).await.map_err(|e| e.to_string())
+}
+
 /// Removes one stock's row from Holdings for one portfolio — deletes all
 /// of that instrument's transactions in this portfolio plus the cached
 /// snapshot, so it stops showing up in list_holdings. This does NOT delete
@@ -1237,7 +1338,8 @@ fn main() {
                 transactions: Arc::new(SqliteTransactionRepository::new(pool.clone())),
                 holdings: Arc::new(SqliteHoldingRepository::new(pool.clone())),
                 instruments: Arc::new(SqliteInstrumentRepository::new(pool.clone())),
-                prices: Arc::new(SqlitePriceRepository::new(pool)),
+                prices: Arc::new(SqlitePriceRepository::new(pool.clone())),
+                alert_rules: Arc::new(SqliteAlertRuleRepository::new(pool)),
                 market_data: Arc::new(YahooFinanceProvider::new()),
             };
 
@@ -1265,6 +1367,9 @@ fn main() {
             get_portfolio_analysis,
             remove_holding,
             remove_from_watchlist,
+            create_alert_rule,
+            list_alert_rules,
+            delete_alert_rule,
             import_holdings_csv,
             export_holdings_csv,
             get_ohlc_history,

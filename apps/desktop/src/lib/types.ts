@@ -118,4 +118,14 @@ export interface PortfolioAnalysisView {
   skipped: RefreshFailure[];
 }
 
+export interface AlertRuleView {
+  id: string;
+  symbol: string;
+  condition: "stop_loss" | "target";
+  threshold_price: string;
+  triggered: boolean;
+  is_triggered_now: boolean;
+  current_price: string | null;
+}
+
 export type ScreenId = "dashboard" | "holdings" | "watchlist" | "analysis" | "chart" | "settings";

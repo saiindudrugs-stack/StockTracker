@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AlertRuleView,
   CandleView,
   DashboardSummary,
   HoldingView,
@@ -80,4 +81,13 @@ export const api = {
   // backend rejects it if any portfolio still holds a non-zero quantity.
   removeHolding: (portfolioId: string, symbol: string) => invoke<void>("remove_holding", { portfolioId, symbol }),
   removeFromWatchlist: (symbol: string) => invoke<void>("remove_from_watchlist", { symbol }),
+
+  // Stop-loss / target alerter. condition is "stop_loss" (fires at or
+  // below threshold) or "target" (fires at or above). Trigger status is
+  // recomputed live every time listAlertRules is called — see the doc
+  // comment on list_alert_rules in main.rs.
+  createAlertRule: (portfolioId: string, symbol: string, condition: "stop_loss" | "target", thresholdPrice: string) =>
+    invoke<void>("create_alert_rule", { portfolioId, symbol, condition, thresholdPrice }),
+  listAlertRules: (portfolioId: string) => invoke<AlertRuleView[]>("list_alert_rules", { portfolioId }),
+  deleteAlertRule: (id: string) => invoke<void>("delete_alert_rule", { id }),
 };

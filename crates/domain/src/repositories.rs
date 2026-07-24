@@ -152,3 +152,13 @@ pub trait PriceRepository: Send + Sync {
         to: NaiveDate,
     ) -> Result<Vec<OhlcBar>, RepositoryError>;
 }
+
+#[async_trait]
+pub trait AlertRuleRepository: Send + Sync {
+    async fn create(&self, rule: &crate::entities::AlertRule) -> Result<(), RepositoryError>;
+    async fn list_for_portfolio(&self, portfolio_id: Uuid) -> Result<Vec<crate::entities::AlertRule>, RepositoryError>;
+    /// One-way: see the doc comment on AlertRule::triggered for why this
+    /// never un-sets the flag.
+    async fn mark_triggered(&self, id: Uuid) -> Result<(), RepositoryError>;
+    async fn delete(&self, id: Uuid) -> Result<(), RepositoryError>;
+}

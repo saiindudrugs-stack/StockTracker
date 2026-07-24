@@ -186,6 +186,30 @@ pub struct Portfolio {
     pub goal_tag: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlertCondition {
+    /// Fires when price falls to or below the threshold.
+    StopLoss,
+    /// Fires when price rises to or above the threshold.
+    Target,
+}
+
+/// A user-set stop-loss or target price watch on one instrument within one
+/// portfolio (HLD Section 5.1 `alert_rule` table, finally implemented).
+/// `triggered` is a one-way flag set once the condition is observed true —
+/// it stays set (rather than re-evaluating every check) so a price that
+/// dips below a stop-loss and bounces back doesn't silently un-alert you;
+/// dismissing/deleting the rule is an explicit user action.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertRule {
+    pub id: Uuid,
+    pub portfolio_id: Uuid,
+    pub instrument_id: Uuid,
+    pub condition: AlertCondition,
+    pub threshold_price: rust_decimal::Decimal,
+    pub triggered: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

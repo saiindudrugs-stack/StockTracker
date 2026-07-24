@@ -11,12 +11,14 @@
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 
+pub mod alert_rule_repository;
 pub mod holding_repository;
 pub mod instrument_repository;
 pub mod portfolio_repository;
 pub mod price_repository;
 pub mod transaction_repository;
 
+pub use alert_rule_repository::SqliteAlertRuleRepository;
 pub use holding_repository::SqliteHoldingRepository;
 pub use instrument_repository::SqliteInstrumentRepository;
 pub use portfolio_repository::SqlitePortfolioRepository;
@@ -107,6 +109,7 @@ impl SqlitePool {
                 DELETE FROM "transaction";
                 DELETE FROM holding_snapshot;
                 DELETE FROM price_history;
+                DELETE FROM alert_rule;
                 DELETE FROM instrument;
                 DELETE FROM portfolio;
                 "#,
@@ -172,4 +175,15 @@ CREATE TABLE IF NOT EXISTS price_history (
     volume INTEGER,
     PRIMARY KEY (instrument_id, date)
 );
+
+CREATE TABLE IF NOT EXISTS alert_rule (
+    id TEXT PRIMARY KEY,
+    portfolio_id TEXT NOT NULL,
+    instrument_id TEXT NOT NULL,
+    condition TEXT NOT NULL,
+    threshold_price TEXT NOT NULL,
+    triggered INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_alert_rule_portfolio ON alert_rule(portfolio_id);
 "#;

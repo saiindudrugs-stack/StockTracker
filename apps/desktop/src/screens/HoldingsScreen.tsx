@@ -4,6 +4,7 @@ import { api } from "../lib/tauri";
 import type { HoldingView, InstrumentView } from "../lib/types";
 import { colors, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
+import { AlertSetter } from "../components/AlertSetter";
 
 type Tab = "long_term" | "intraday";
 type TxnType = "buy" | "sell";
@@ -169,6 +170,15 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
     try {
       await api.removeHolding(portfolioId, sym);
       await refreshHoldings();
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function handleSetAlert(symbol: string, condition: "stop_loss" | "target", thresholdPrice: string) {
+    try {
+      await api.createAlertRule(portfolioId, symbol, condition, thresholdPrice);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -482,7 +492,8 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                         ? "—"
                         : "…"}
                     </td>
-                    <td>
+                    <td style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <AlertSetter onSave={(condition, price) => handleSetAlert(h.symbol, condition, price)} />
                       <ConfirmButton
                         label="Remove"
                         confirmLabel="Yes, delete"
