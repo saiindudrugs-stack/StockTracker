@@ -1,5 +1,18 @@
 import type { CSSProperties } from "react";
 
+/// Formats a numeric string (as returned by every backend command — prices
+/// and money are transmitted as strings, not JS numbers, to avoid float
+/// precision surprises) with thousands separators and exactly 2 decimal
+/// places. This is what was missing from Market Value / Unrealized P/L —
+/// they were rendered as raw strings straight from the backend with no
+/// formatting at all.
+export function fmtMoney(value: string | number | null | undefined): string {
+  if (value == null) return "—";
+  const n = typeof value === "string" ? parseFloat(value) : value;
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export const colors = {
   navy: "#1F3864",
   accent: "#2E74B5",

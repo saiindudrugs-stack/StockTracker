@@ -23,6 +23,7 @@ export interface HoldingView {
   quantity: string;
   avg_cost: string;
   last_price: string | null;
+  previous_close: string | null;
   market_value: string | null;
   unrealized_pnl: string | null;
   day_change_pct: number | null;
@@ -70,6 +71,7 @@ export interface RefreshPricesResult {
 export interface MarketSnapshotView {
   symbol: string;
   price: string;
+  previous_close: string | null;
   day_high: string | null;
   day_low: string | null;
   week52_high: string | null;

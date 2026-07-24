@@ -22,7 +22,8 @@ export const api = {
 
   getDashboardSummary: (portfolioId: string) =>
     invoke<DashboardSummary>("get_dashboard_summary", { portfolioId }),
-  listHoldings: (portfolioId: string) => invoke<HoldingView[]>("list_holdings", { portfolioId }),
+  listHoldings: (portfolioId: string, siRatePct?: number) =>
+    invoke<HoldingView[]>("list_holdings", { portfolioId, siRatePct }),
   recordBuy: (portfolioId: string, symbol: string, quantity: string, price: string) =>
     invoke<void>("record_buy", { portfolioId, symbol, quantity, price }),
   recordSell: (portfolioId: string, symbol: string, quantity: string, price: string) =>
@@ -34,6 +35,10 @@ export const api = {
       "import_holdings_csv",
       { portfolioId, csvContent }
     ),
+  // Returns raw CSV text — the frontend turns it into a downloadable file
+  // via a Blob, same trick already used for the CSV template download.
+  exportHoldingsCsv: (portfolioId: string, siRatePct?: number) =>
+    invoke<string>("export_holdings_csv", { portfolioId, siRatePct }),
   computeXirrForSymbol: (portfolioId: string, symbol: string) =>
     invoke<number>("compute_xirr_for_symbol", { portfolioId, symbol }),
   computePortfolioXirr: (portfolioId: string) => invoke<number>("compute_portfolio_xirr", { portfolioId }),

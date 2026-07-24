@@ -57,6 +57,10 @@ struct HoldingView {
     quantity: String,
     avg_cost: String,
     last_price: Option<String>,
+    /// Previous trading day's close — shown as its own column so the
+    /// day-change % has a visible, checkable basis rather than being a
+    /// number you just have to trust.
+    previous_close: Option<String>,
     market_value: Option<String>,
     unrealized_pnl: Option<String>,
     /// Change vs. the previous trading day's close, as a fraction (e.g.
@@ -115,6 +119,18 @@ fn placeholder_isin(symbol: &str) -> String {
 /// paisa, whatever produced the extra digits upstream.
 fn round_price(v: f64) -> Decimal {
     Decimal::from_str(&v.to_string()).unwrap_or(Decimal::ZERO).round_dp(2)
+}
+
+/// "Today" per NSE/BSE's own clock (IST, UTC+5:30), not the server's UTC
+/// clock. Plain `chrono::Utc::now().date_naive()` is wrong for roughly 5.5
+/// hours every day (IST midnight to 5:30 AM) — UTC's calendar date is still
+/// "yesterday" during that window, which would shift every "today vs.
+/// previous close" comparison by a day for anyone using this app during
+/// those hours India-side. Every place in this file that means "today" in
+/// the sense of "the current trading day" should use this, not
+/// chrono::Utc::now().date_naive() directly.
+fn ist_today() -> chrono::NaiveDate {
+    (chrono::Utc::now() + chrono::Duration::hours(5) + chrono::Duration::minutes(30)).date_naive()
 }
 
 #[tauri::command]
@@ -198,13 +214,15 @@ struct BackfillResult {
 /// fails or the user is offline, and coupling them would make adding a
 /// ticker silently depend on Yahoo being reachable.
 #[tauri::command]
-async fn backfill_history(state: State<'_, AppState>, symbol: String) -> Result<BackfillResult, String> {
-    let instrument = state
-        .instruments
-        .find_by_symbol(&symbol)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+/// Shared by backfill_history (the command) and demo seeding — fetches a
+/// real year of Yahoo history and stores it. Factored out so the demo
+/// RELIANCE/TCS instruments get real data at seed time instead of the old
+/// synthetic random-walk seed, which was the actual root cause of a real
+/// bug: comparing a live real quote against a fake synthetic "previous
+/// close" produced nonsensical day-change percentages (a user-reported
+/// -47% for RELIANCE that doesn't reflect anything that actually happened
+/// in the market).
+async fn backfill_instrument_history(state: &AppState, instrument: &Instrument) -> Result<usize, String> {
     let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
     let bars = state
         .market_data
@@ -229,8 +247,20 @@ async fn backfill_history(state: State<'_, AppState>, symbol: String) -> Result<
             .await
             .map_err(|e| e.to_string())?;
     }
+    Ok(bars.len())
+}
 
-    Ok(BackfillResult { symbol: instrument.symbol, days_backfilled: bars.len() })
+#[tauri::command]
+async fn backfill_history(state: State<'_, AppState>, symbol: String) -> Result<BackfillResult, String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+    let days_backfilled = backfill_instrument_history(&state, &instrument).await?;
+
+    Ok(BackfillResult { symbol: instrument.symbol, days_backfilled })
 }
 
 #[derive(Serialize)]
@@ -264,10 +294,59 @@ struct ImportCsvResult {
 /// invalid date) doesn't abort the rest of the file. The per-row result
 /// list is the whole point: silently skipping a row would be worse than a
 /// slow file, but so would one bad row blocking 50 good ones.
+/// Exports every column shown on the Holdings screen (plus XIRR, computed
+/// separately since it isn't part of HoldingView) as CSV text. Reuses
+/// list_holdings directly rather than re-querying everything a second way,
+/// so the exported numbers are guaranteed to match what's on screen.
+#[tauri::command]
+async fn export_holdings_csv(state: State<'_, AppState>, portfolio_id: String, si_rate_pct: Option<f64>) -> Result<String, String> {
+    let holdings = list_holdings(state.clone(), portfolio_id.clone(), si_rate_pct).await?;
+    let pid = parse_portfolio_id(&portfolio_id)?;
+
+    let mut out = String::from(
+        "Symbol,Sector,Quantity,AvgCost,PreviousClose,LTP,DayChangePct,MarketValue,UnrealizedPnl,CAGRPct,SimpleInterestValue,YearsHeld,XIRRPct\n",
+    );
+    for h in &holdings {
+        let xirr = match state.instruments.find_by_symbol(&h.symbol).await {
+            Ok(Some(instrument)) => {
+                let use_case = ComputeXirrUseCase::new(state.transactions.clone(), state.prices.clone());
+                use_case
+                    .execute_for_instrument(pid, instrument.id)
+                    .await
+                    .ok()
+                    .map(|r| format!("{:.2}", r * 100.0))
+                    .unwrap_or_default()
+            }
+            _ => String::new(),
+        };
+        // Sector/symbol are the only fields that could theoretically contain
+        // a comma; wrapping every field in quotes would be safer in general,
+        // but this app's own tickers/sectors are plain words in practice —
+        // same honesty-over-completeness call as the CSV importer above.
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            h.symbol,
+            h.sector.clone().unwrap_or_default(),
+            h.quantity,
+            h.avg_cost,
+            h.previous_close.clone().unwrap_or_default(),
+            h.last_price.clone().unwrap_or_default(),
+            h.day_change_pct.map(|p| format!("{:.4}", p * 100.0)).unwrap_or_default(),
+            h.market_value.clone().unwrap_or_default(),
+            h.unrealized_pnl.clone().unwrap_or_default(),
+            h.cagr_pct.map(|p| format!("{p:.2}")).unwrap_or_default(),
+            h.simple_interest_value_at_9_5_pct.clone().unwrap_or_default(),
+            h.years_held.map(|y| format!("{y:.2}")).unwrap_or_default(),
+            xirr,
+        ));
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 async fn import_holdings_csv(state: State<'_, AppState>, portfolio_id: String, csv_content: String) -> Result<ImportCsvResult, String> {
     let portfolio_id = parse_portfolio_id(&portfolio_id)?;
-    let default_buy_date = chrono::Utc::now().date_naive() - chrono::Duration::days(365);
+    let default_buy_date = ist_today() - chrono::Duration::days(365);
 
     let mut rows_out = Vec::new();
     let mut imported = 0usize;
@@ -385,7 +464,7 @@ async fn get_price_history(state: State<'_, AppState>, symbol: String) -> Result
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
 
-    let to = chrono::Utc::now().date_naive();
+    let to = ist_today();
     let from = to - chrono::Duration::days(60);
     let series = state
         .prices
@@ -421,7 +500,7 @@ async fn get_ohlc_history(state: State<'_, AppState>, symbol: String) -> Result<
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
 
-    let to = chrono::Utc::now().date_naive();
+    let to = ist_today();
     let from = to - chrono::Duration::days(365);
     let series = state.prices.ohlc_series(instrument.id, from, to).await.map_err(|e| e.to_string())?;
 
@@ -446,7 +525,11 @@ async fn get_dashboard_summary(state: State<'_, AppState>, portfolio_id: String)
 }
 
 #[tauri::command]
-async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Result<Vec<HoldingView>, String> {
+async fn list_holdings(state: State<'_, AppState>, portfolio_id: String, si_rate_pct: Option<f64>) -> Result<Vec<HoldingView>, String> {
+    // Defaults to 9.5% (the original hardcoded value) when the frontend
+    // doesn't pass one — keeps existing behavior for anyone not using the
+    // new configurable input.
+    let si_rate = si_rate_pct.unwrap_or(9.5) / 100.0;
     let portfolio_id = parse_portfolio_id(&portfolio_id)?;
     let holdings: Vec<Holding> = state
         .holdings
@@ -468,11 +551,16 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Resu
             .map_err(|e| e.to_string())?;
 
         // Day change: compare today's latest price against the most recent
-        // *prior* trading day's close — see compute_day_change_pct, shared
-        // with get_market_snapshot.
-        let day_change_pct = match ltp {
-            Some(current) => compute_day_change_pct(&state, h.instrument_id, current).await?,
-            None => None,
+        // *prior* trading day's close. previous_close is fetched once via
+        // the shared helper and day_change_pct is derived from that same
+        // value shown in its own column, so the two can never disagree.
+        let previous_close = find_previous_close(&state, h.instrument_id).await?;
+        let day_change_pct = match (ltp, previous_close) {
+            (Some(current), Some(prev)) if !prev.is_zero() => {
+                let pct = ((current - prev) / prev).round_dp(6);
+                pct.to_string().parse::<f64>().ok()
+            }
+            _ => None,
         };
 
         // Years held: from the earliest Buy of this stock in this
@@ -490,7 +578,7 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Resu
             .map(|t| t.trade_date)
             .min();
 
-        let today = chrono::Utc::now().date_naive();
+        let today = ist_today();
         let years_held = earliest_buy.map(|d| (today - d).num_days() as f64 / 365.25).filter(|y| *y > 0.0);
 
         let invested_value = h.avg_cost.to_string().parse::<f64>().unwrap_or(0.0) * h.quantity.to_string().parse::<f64>().unwrap_or(0.0);
@@ -502,7 +590,7 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Resu
             _ => None,
         };
         let simple_interest_value_at_9_5_pct = years_held
-            .map(|years| pm_domain::analytics::simple_interest_value(invested_value, 0.095, years))
+            .map(|years| pm_domain::analytics::simple_interest_value(invested_value, si_rate, years))
             .map(|v| format!("{v:.2}"));
 
         views.push(HoldingView {
@@ -511,6 +599,7 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String) -> Resu
             quantity: h.quantity.to_string(),
             avg_cost: h.avg_cost.to_string(),
             last_price: ltp.map(|p| p.to_string()),
+            previous_close: previous_close.map(|p| p.to_string()),
             market_value: ltp.map(|p| h.market_value(p).to_string()),
             unrealized_pnl: ltp.map(|p| h.unrealized_pnl(p).to_string()),
             day_change_pct,
@@ -552,7 +641,7 @@ async fn refresh_prices(state: State<'_, AppState>, portfolio_id: String) -> Res
 
     let mut updated = Vec::new();
     let mut failed = Vec::new();
-    let today = chrono::Utc::now().date_naive();
+    let today = ist_today();
 
     for h in holdings {
         let instrument = match state.instruments.get(h.instrument_id).await {
@@ -586,36 +675,29 @@ async fn refresh_prices(state: State<'_, AppState>, portfolio_id: String) -> Res
 /// written inline in list_holdings first; factored out here rather than
 /// copy-pasted a second time, given how many of this project's earlier
 /// bugs came from exactly that kind of drift between near-duplicate logic.
-async fn compute_day_change_pct(
+/// The most recent trading day's close strictly before today — the shared
+/// lookup behind both the "Previous Day Close" column and the day-change %
+/// derived from it, so the two numbers can never quietly disagree with
+/// each other.
+async fn find_previous_close(
     state: &State<'_, AppState>,
     instrument_id: Uuid,
-    current: Decimal,
-) -> Result<Option<f64>, String> {
-    let today = chrono::Utc::now().date_naive();
+) -> Result<Option<Decimal>, String> {
+    let today = ist_today();
     let window_start = today - chrono::Duration::days(10);
     let series = state
         .prices
         .daily_series(instrument_id, window_start, today)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(series
-        .iter()
-        .rev()
-        .find(|(date, _)| *date < today)
-        .and_then(|(_, prev_close)| {
-            if prev_close.is_zero() {
-                None
-            } else {
-                let pct = ((current - *prev_close) / *prev_close).round_dp(6);
-                pct.to_string().parse::<f64>().ok()
-            }
-        }))
+    Ok(series.iter().rev().find(|(date, _)| *date < today).map(|(_, close)| *close))
 }
 
 #[derive(Serialize)]
 struct MarketSnapshotView {
     symbol: String,
     price: String,
+    previous_close: Option<String>,
     day_high: Option<String>,
     day_low: Option<String>,
     week52_high: Option<String>,
@@ -638,11 +720,20 @@ async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Resu
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
     let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
     let quote = state.market_data.fetch_quote(&yahoo_symbol).await.map_err(|e| e.to_string())?;
-    let day_change_pct = compute_day_change_pct(&state, instrument.id, quote.price).await?;
+    let previous_close = find_previous_close(&state, instrument.id).await?;
+    let day_change_pct = previous_close.and_then(|prev| {
+        if prev.is_zero() {
+            None
+        } else {
+            let pct = ((quote.price - prev) / prev).round_dp(6);
+            pct.to_string().parse::<f64>().ok()
+        }
+    });
 
     Ok(MarketSnapshotView {
         symbol: instrument.symbol,
         price: quote.price.to_string(),
+        previous_close: previous_close.map(|p| p.to_string()),
         day_high: quote.day_high.map(|d| d.to_string()),
         day_low: quote.day_low.map(|d| d.to_string()),
         week52_high: quote.week52_high.map(|d| d.to_string()),
@@ -977,7 +1068,7 @@ async fn record_transaction_of_type(
         quantity: Decimal::from_str(&quantity).map_err(|e| e.to_string())?,
         price: Money::inr(Decimal::from_str(&price).map_err(|e| e.to_string())?),
         fees: Money::inr(Decimal::from_str("20").unwrap()),
-        trade_date: chrono::Utc::now().date_naive(),
+        trade_date: ist_today(),
         broker_ref: None,
         recorded_at: chrono::Utc::now(),
     };
@@ -1041,44 +1132,6 @@ async fn compute_portfolio_xirr(state: State<'_, AppState>, portfolio_id: String
     use_case.execute_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())
 }
 
-/// Deterministic pseudo-random walk (simple LCG, fixed seed) — no external
-/// crate needed, and deterministic so every fresh install shows the same
-/// demo chart rather than a different random one each run, which would make
-/// screenshots/bug reports inconsistent between machines.
-async fn seed_price_history(
-    state: &AppState,
-    instrument_id: Uuid,
-    start_price: Decimal,
-    seed: u64,
-) -> Result<(), String> {
-    let mut rng_state = seed;
-    let mut next_step = || -> Decimal {
-        rng_state ^= rng_state << 13;
-        rng_state ^= rng_state >> 7;
-        rng_state ^= rng_state << 17;
-        let bucket = (rng_state % 301) as i64 - 150;
-        Decimal::from(bucket) / Decimal::from(10000)
-    };
-
-    let today = chrono::Utc::now().date_naive();
-    let mut price = start_price;
-    let mut day_prices = Vec::with_capacity(60);
-    for i in (0..60).rev() {
-        let date = today - chrono::Duration::days(i);
-        let pct_move = next_step();
-        price = (price * (Decimal::ONE + pct_move)).round_dp(2);
-        if price <= Decimal::ZERO {
-            price = start_price;
-        }
-        day_prices.push((date, price));
-    }
-
-    for (date, close) in day_prices {
-        state.prices.upsert_daily_bar(instrument_id, date, close).await.map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 /// Seeds one demo portfolio ("My Portfolio") with two demo instruments and
 /// one buy each, only on first-ever launch (no portfolios exist yet) — so
 /// re-launching, or any portfolio the user creates afterward, doesn't get
@@ -1119,8 +1172,14 @@ async fn seed_demo_data_if_first_launch(state: &AppState) -> Result<(), String> 
     state.instruments.upsert(&reliance).await.map_err(|e| e.to_string())?;
     state.instruments.upsert(&tcs).await.map_err(|e| e.to_string())?;
 
-    seed_price_history(state, reliance.id, Decimal::from_str("2450.00").unwrap(), 0x5EED_0001).await?;
-    seed_price_history(state, tcs.id, Decimal::from_str("3950.00").unwrap(), 0x5EED_0002).await?;
+    // Real Yahoo data, not the old synthetic random-walk seed — see the
+    // doc comment on backfill_instrument_history for why that mattered.
+    // Best-effort: if this fails (offline first launch, rate limit), the
+    // demo instruments just start with no price history, same as any
+    // manually-added ticker whose backfill hasn't run yet — not a reason
+    // to fail app startup.
+    let _ = backfill_instrument_history(state, &reliance).await;
+    let _ = backfill_instrument_history(state, &tcs).await;
 
     let use_case = RecordTransactionUseCase::new(state.transactions.clone(), state.holdings.clone());
     use_case
@@ -1132,7 +1191,7 @@ async fn seed_demo_data_if_first_launch(state: &AppState) -> Result<(), String> 
             quantity: Decimal::from(10),
             price: Money::inr(Decimal::from_str("2450.50").unwrap()),
             fees: Money::inr(Decimal::from(20)),
-            trade_date: chrono::Utc::now().date_naive(),
+            trade_date: ist_today(),
             broker_ref: None,
             recorded_at: chrono::Utc::now(),
         })
@@ -1148,7 +1207,7 @@ async fn seed_demo_data_if_first_launch(state: &AppState) -> Result<(), String> 
             quantity: Decimal::from(5),
             price: Money::inr(Decimal::from_str("3980.00").unwrap()),
             fees: Money::inr(Decimal::from(20)),
-            trade_date: chrono::Utc::now().date_naive(),
+            trade_date: ist_today(),
             broker_ref: None,
             recorded_at: chrono::Utc::now(),
         })
@@ -1207,6 +1266,7 @@ fn main() {
             remove_holding,
             remove_from_watchlist,
             import_holdings_csv,
+            export_holdings_csv,
             get_ohlc_history,
             compute_portfolio_xirr,
             reset_all_data

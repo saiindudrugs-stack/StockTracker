@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { api } from "../lib/tauri";
 import type { HoldingView, InstrumentView } from "../lib/types";
-import { colors, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor } from "../lib/theme";
+import { colors, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 
 type Tab = "long_term" | "intraday";
@@ -19,6 +19,7 @@ function parseNumeric(s: string | null): number {
 export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
   const [tab, setTab] = useState<Tab>("long_term");
   const [holdings, setHoldings] = useState<HoldingView[]>([]);
+  const [siRatePct, setSiRatePct] = useState("9.5");
   const [instruments, setInstruments] = useState<InstrumentView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [txnType, setTxnType] = useState<TxnType>("buy");
@@ -39,7 +40,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
 
   async function refreshHoldings() {
     try {
-      const list = await api.listHoldings(portfolioId);
+      const list = await api.listHoldings(portfolioId, parseFloat(siRatePct) || 9.5);
       setHoldings(list);
       setError(null);
       // Auto-compute XIRR per row rather than requiring a click per stock —
@@ -211,10 +212,100 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
     URL.revokeObjectURL(url);
   }
 
+  async function handleExportHoldings() {
+    try {
+      const csv = await api.exportHoldingsCsv(portfolioId, parseFloat(siRatePct) || 9.5);
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Portfolio_Holdings_Export_${ist_today_stamp()}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function ist_today_stamp(): string {
+    // IST date for the filename, matching the backend's own IST-based
+    // "today" rather than the browser's local timezone, which could
+    // disagree if this machine isn't set to IST.
+    const ist = new Date(Date.now() + (5 * 60 + 30) * 60 * 1000);
+    return ist.toISOString().slice(0, 10);
+  }
+
   // Same "sort by today's market activity" behavior as Watchlist — highest
-  // volume first, unknown-volume rows sink to the bottom rather than
-  // jumping around as data trickles in.
-  const sortedHoldings = [...holdings].sort((a, b) => (volumeBySymbol[b.symbol] ?? -1) - (volumeBySymbol[a.symbol] ?? -1));
+  // volume first by default, but any column header can be clicked to sort
+  // by that instead.
+  type SortKey =
+    | "symbol"
+    | "quantity"
+    | "avg_cost"
+    | "previous_close"
+    | "last_price"
+    | "day_change_pct"
+    | "volume"
+    | "market_value"
+    | "unrealized_pnl"
+    | "cagr_pct"
+    | "xirr";
+  const [sortKey, setSortKey] = useState<SortKey>("volume");
+  const [sortDir, setSortDir] = useState<1 | -1>(-1); // -1 = descending
+
+  function sortValue(h: HoldingView, key: SortKey): number | string {
+    switch (key) {
+      case "symbol":
+        return h.symbol;
+      case "quantity":
+        return parseNumeric(h.quantity);
+      case "avg_cost":
+        return parseNumeric(h.avg_cost);
+      case "previous_close":
+        return h.previous_close != null ? parseNumeric(h.previous_close) : -Infinity;
+      case "last_price":
+        return h.last_price != null ? parseNumeric(h.last_price) : -Infinity;
+      case "day_change_pct":
+        return h.day_change_pct ?? -Infinity;
+      case "volume":
+        return volumeBySymbol[h.symbol] ?? -1;
+      case "market_value":
+        return h.market_value != null ? parseNumeric(h.market_value) : -Infinity;
+      case "unrealized_pnl":
+        return h.unrealized_pnl != null ? parseNumeric(h.unrealized_pnl) : -Infinity;
+      case "cagr_pct":
+        return h.cagr_pct ?? -Infinity;
+      case "xirr":
+        return typeof xirrBySymbol[h.symbol] === "number" ? (xirrBySymbol[h.symbol] as number) : -Infinity;
+    }
+  }
+
+  function handleSortClick(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === 1 ? -1 : 1) as 1 | -1);
+    } else {
+      setSortKey(key);
+      setSortDir(-1);
+    }
+  }
+
+  function sortIndicator(key: SortKey): string {
+    if (key !== sortKey) return "";
+    return sortDir === 1 ? " ▲" : " ▼";
+  }
+
+  const sortedHoldings = [...holdings].sort((a, b) => {
+    const va = sortValue(a, sortKey);
+    const vb = sortValue(b, sortKey);
+    if (typeof va === "string" || typeof vb === "string") {
+      const cmp = String(va).localeCompare(String(vb));
+      return sortDir === -1 ? -cmp : cmp;
+    }
+    // sortDir === -1 means descending (highest first) — the default for
+    // "sort by market activity," and what clicking a header once gives you
+    // for any numeric column, matching how most spreadsheet tools behave.
+    return sortDir === -1 ? vb - va : va - vb;
+  });
 
   return (
     <div style={{ padding: 24 }}>
@@ -268,6 +359,16 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
               <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
               Auto-refresh every 30s
             </label>
+            <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5 }}>
+              SI benchmark rate:
+              <input
+                value={siRatePct}
+                onChange={(e) => setSiRatePct(e.target.value)}
+                style={{ width: 48 }}
+              />
+              %
+            </label>
+            <button onClick={refreshHoldings}>Apply Rate</button>
           </div>
           <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 0, marginBottom: 10 }}>
             Pulls from an unofficial Yahoo Finance endpoint — free, but unsupported by Yahoo and
@@ -283,17 +384,40 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
           <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
-                <th style={{ padding: "6px 8px 6px 0" }}>Symbol</th>
-                <th>Qty</th>
-                <th>Avg cost</th>
-                <th>LTP</th>
-                <th>Day chg %</th>
-                <th>Volume</th>
-                <th>Mkt value</th>
-                <th>Unreal. P/L</th>
-                <th>CAGR %</th>
-                <th>SI @9.5% vs Actual</th>
-                <th>XIRR %</th>
+                <th style={{ padding: "6px 8px 6px 0", cursor: "pointer" }} onClick={() => handleSortClick("symbol")}>
+                  Symbol{sortIndicator("symbol")}
+                </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("quantity")}>
+                  Qty{sortIndicator("quantity")}
+                </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("avg_cost")}>
+                  Avg cost{sortIndicator("avg_cost")}
+                </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("previous_close")}>
+                  Prev Close{sortIndicator("previous_close")}
+                </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("last_price")}>
+                  LTP{sortIndicator("last_price")}
+                </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_change_pct")}>
+                  Day chg %{sortIndicator("day_change_pct")}
+                </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("volume")}>
+                  Volume{sortIndicator("volume")}
+                </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("market_value")}>
+                  Mkt value{sortIndicator("market_value")}
+                </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("unrealized_pnl")}>
+                  Unreal. P/L{sortIndicator("unrealized_pnl")}
+                </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("cagr_pct")}>
+                  CAGR %{sortIndicator("cagr_pct")}
+                </th>
+                <th>SI @{siRatePct || "9.5"}% vs Actual</th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("xirr")}>
+                  XIRR %{sortIndicator("xirr")}
+                </th>
                 <th></th>
               </tr>
             </thead>
@@ -316,15 +440,16 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                   >
                     <td style={{ padding: "6px 8px 6px 0", fontWeight: flash ? 700 : 400 }}>{h.symbol}</td>
                     <td>{h.quantity}</td>
-                    <td>{h.avg_cost}</td>
-                    <td>{h.last_price ?? "—"}</td>
+                    <td>{fmtMoney(h.avg_cost)}</td>
+                    <td>{fmtMoney(h.previous_close)}</td>
+                    <td>{fmtMoney(h.last_price)}</td>
                     <td style={{ color: h.day_change_pct != null ? pnlColor(h.day_change_pct) : colors.textMuted, fontWeight: 600 }}>
                       {h.day_change_pct != null ? `${(h.day_change_pct * 100).toFixed(2)}%` : "—"}
                     </td>
                     <td>{volumeBySymbol[h.symbol] != null ? volumeBySymbol[h.symbol].toLocaleString() : "—"}</td>
-                    <td>{h.market_value ?? "—"}</td>
+                    <td>{fmtMoney(h.market_value)}</td>
                     <td style={{ color: h.unrealized_pnl != null ? pnlColor(pnl) : colors.textMuted, fontWeight: 500 }}>
-                      {h.unrealized_pnl ?? "—"}
+                      {fmtMoney(h.unrealized_pnl)}
                     </td>
                     <td style={{ color: h.cagr_pct != null ? pnlColor(h.cagr_pct) : colors.textMuted, fontWeight: 600 }}>
                       {h.cagr_pct != null ? `${h.cagr_pct.toFixed(2)}%` : "—"}
@@ -332,10 +457,10 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                     <td style={{ fontSize: 11 }}>
                       {siValue != null && beatingSi != null ? (
                         <>
-                          <div style={{ color: colors.textMuted }}>SI: {siValue.toFixed(0)}</div>
+                          <div style={{ color: colors.textMuted }}>SI: {fmtMoney(siValue)}</div>
                           <div style={{ color: pnlColor(beatingSi), fontWeight: 600 }}>
                             {beatingSi >= 0 ? "Beating by " : "Behind by "}
-                            {Math.abs(beatingSi).toFixed(0)}
+                            {fmtMoney(Math.abs(beatingSi))}
                           </div>
                         </>
                       ) : (
@@ -369,13 +494,17 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
               })}
               {holdings.length === 0 && (
                 <tr>
-                  <td colSpan={12} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
+                  <td colSpan={13} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
                     No holdings in this portfolio yet — record a buy below.
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+
+          <button onClick={handleExportHoldings} style={{ marginBottom: 16 }}>
+            Export Holdings (CSV)
+          </button>
 
           <h2 style={{ fontSize: 15, marginTop: 28, color: colors.navy }}>Bulk Import Holdings (CSV)</h2>
           <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 0 }}>

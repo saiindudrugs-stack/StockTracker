@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri";
 import type { InstrumentView, MarketSnapshotView, TechnicalAnalysisView } from "../lib/types";
-import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor } from "../lib/theme";
+import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 
 const AUTO_REFRESH_MS = 30_000;
@@ -147,14 +147,63 @@ export function WatchlistScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, instruments.length]);
 
-  // Auto-sort by today's trading volume, highest first — surfaces the most
-  // actively-moving stocks without you having to hunt for them. Instruments
-  // with no snapshot loaded yet (or no volume in it) sort to the bottom
-  // rather than jumping around unpredictably as data trickles in.
+  type SortKey = "symbol" | "previous_close" | "price" | "day_change_pct" | "day_high" | "day_low" | "week52_high" | "week52_low" | "volume" | "rsi" | "phase" | "signal";
+  const [sortKey, setSortKey] = useState<SortKey>("volume");
+  const [sortDir, setSortDir] = useState<1 | -1>(-1); // -1 = descending, matches the previous fixed "highest volume first" default
+
+  function sortValue(inst: InstrumentView, key: SortKey): number | string {
+    const snap = rows[inst.symbol]?.snapshot;
+    const analysis = rows[inst.symbol]?.analysis;
+    switch (key) {
+      case "symbol":
+        return inst.symbol;
+      case "previous_close":
+        return snap?.previous_close != null ? parseFloat(snap.previous_close) : -Infinity;
+      case "price":
+        return snap?.price != null ? parseFloat(snap.price) : -Infinity;
+      case "day_change_pct":
+        return snap?.day_change_pct ?? -Infinity;
+      case "day_high":
+        return snap?.day_high != null ? parseFloat(snap.day_high) : -Infinity;
+      case "day_low":
+        return snap?.day_low != null ? parseFloat(snap.day_low) : -Infinity;
+      case "week52_high":
+        return snap?.week52_high != null ? parseFloat(snap.week52_high) : -Infinity;
+      case "week52_low":
+        return snap?.week52_low != null ? parseFloat(snap.week52_low) : -Infinity;
+      case "volume":
+        return snap?.volume ?? -1;
+      case "rsi":
+        return analysis?.rsi_14 ?? -Infinity;
+      case "phase":
+        return analysis?.phase ?? "";
+      case "signal":
+        return analysis?.recommendation ?? "";
+    }
+  }
+
+  function handleSortClick(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === 1 ? -1 : 1) as 1 | -1);
+    } else {
+      setSortKey(key);
+      setSortDir(-1);
+    }
+  }
+
+  function sortIndicator(key: SortKey): string {
+    if (key !== sortKey) return "";
+    return sortDir === 1 ? " ▲" : " ▼";
+  }
+
   const sortedInstruments = [...instruments].sort((a, b) => {
-    const va = rows[a.symbol]?.snapshot?.volume ?? -1;
-    const vb = rows[b.symbol]?.snapshot?.volume ?? -1;
-    return vb - va;
+    const va = sortValue(a, sortKey);
+    const vb = sortValue(b, sortKey);
+    if (typeof va === "string" || typeof vb === "string") {
+      const cmp = String(va).localeCompare(String(vb));
+      return sortDir === -1 ? -cmp : cmp;
+    }
+    return sortDir === -1 ? vb - va : va - vb;
   });
 
   return (
@@ -193,17 +242,42 @@ export function WatchlistScreen() {
       <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
         <thead>
           <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
-            <th style={{ padding: "6px 8px 6px 0" }}>Symbol</th>
-            <th>Price</th>
-            <th>Day chg %</th>
-            <th>Day High</th>
-            <th>Day Low</th>
-            <th>52W High</th>
-            <th>52W Low</th>
-            <th>Volume</th>
-            <th>RSI(14)</th>
-            <th>Phase</th>
-            <th>Signal</th>
+            <th style={{ padding: "6px 8px 6px 0", cursor: "pointer" }} onClick={() => handleSortClick("symbol")}>
+              Symbol{sortIndicator("symbol")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("previous_close")}>
+              Prev Close{sortIndicator("previous_close")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("price")}>
+              Price{sortIndicator("price")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_change_pct")}>
+              Day chg %{sortIndicator("day_change_pct")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_high")}>
+              Day High{sortIndicator("day_high")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_low")}>
+              Day Low{sortIndicator("day_low")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("week52_high")}>
+              52W High{sortIndicator("week52_high")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("week52_low")}>
+              52W Low{sortIndicator("week52_low")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("volume")}>
+              Volume{sortIndicator("volume")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("rsi")}>
+              RSI(14){sortIndicator("rsi")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("phase")}>
+              Phase{sortIndicator("phase")}
+            </th>
+            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("signal")}>
+              Signal{sortIndicator("signal")}
+            </th>
             <th></th>
           </tr>
         </thead>
@@ -226,14 +300,15 @@ export function WatchlistScreen() {
                   onClick={() => patchRow(inst.symbol, { expanded: !row?.expanded })}
                 >
                   <td style={{ padding: "6px 8px 6px 0", fontWeight: flash ? 700 : 400 }}>{inst.symbol}</td>
-                  <td>{row?.snapshot?.price ?? (row?.loadingSnapshot ? "…" : "—")}</td>
+                  <td>{fmtMoney(row?.snapshot?.previous_close)}</td>
+                  <td>{row?.snapshot?.price ? fmtMoney(row.snapshot.price) : (row?.loadingSnapshot ? "…" : "—")}</td>
                   <td style={{ color: dayChange != null ? pnlColor(dayChange) : colors.textMuted, fontWeight: 600 }}>
                     {dayChange != null ? `${(dayChange * 100).toFixed(2)}%` : "—"}
                   </td>
-                  <td>{row?.snapshot?.day_high ?? "—"}</td>
-                  <td>{row?.snapshot?.day_low ?? "—"}</td>
-                  <td>{row?.snapshot?.week52_high ?? "—"}</td>
-                  <td>{row?.snapshot?.week52_low ?? "—"}</td>
+                  <td>{fmtMoney(row?.snapshot?.day_high)}</td>
+                  <td>{fmtMoney(row?.snapshot?.day_low)}</td>
+                  <td>{fmtMoney(row?.snapshot?.week52_high)}</td>
+                  <td>{fmtMoney(row?.snapshot?.week52_low)}</td>
                   <td>{row?.snapshot?.volume?.toLocaleString() ?? "—"}</td>
                   <td style={{ color: rsiColor(row?.analysis?.rsi_14 ?? null), fontWeight: 600 }}>
                     {row?.analysis ? fmtNum(row.analysis.rsi_14) : "—"}
@@ -273,7 +348,7 @@ export function WatchlistScreen() {
                 </tr>
                 {row?.expanded && row.analysis && (
                   <tr key={`${inst.symbol}-detail`} style={{ background: colors.surface }}>
-                    <td colSpan={12} style={{ padding: "8px 12px", fontSize: 12 }}>
+                    <td colSpan={13} style={{ padding: "8px 12px", fontSize: 12 }}>
                       <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
                         <span>SMA(10): <strong>{fmtNum(row.analysis.sma_10)}</strong></span>
                         <span>SMA(20): <strong>{fmtNum(row.analysis.sma_20)}</strong></span>
@@ -322,7 +397,7 @@ export function WatchlistScreen() {
           })}
           {instruments.length === 0 && (
             <tr>
-              <td colSpan={12} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
+              <td colSpan={13} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
                 No tickers yet — add one above to start tracking it.
               </td>
             </tr>
