@@ -18,7 +18,8 @@ use pm_application::use_cases::{
 };
 use pm_domain::entities::{AlertCondition, AlertRule, AssetClass, Holding, Instrument, Portfolio, Transaction, TransactionType};
 use pm_domain::repositories::{
-    HoldingRepository, InstrumentRepository, PortfolioRepository, PriceRepository, TransactionRepository,
+    AlertRuleRepository, HoldingRepository, InstrumentRepository, PortfolioRepository, PriceRepository,
+    TransactionRepository,
 };
 use pm_domain::value_objects::{Currency, Isin, Money};
 use pm_infrastructure::market_data::{yahoo_finance::YahooFinanceProvider, MarketDataProvider};
