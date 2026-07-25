@@ -76,6 +76,13 @@ struct HoldingView {
     /// price history yet (e.g. a ticker added and priced for the first
     /// time today has nothing to compare against).
     day_change_pct: Option<f64>,
+    /// Today's move in rupees: quantity * (current price - previous
+    /// close). Different from unrealized_pnl (which is since you bought
+    /// it) and different from day_change_pct (which is a percentage, not
+    /// an amount) — this is "how much did today specifically move my
+    /// money by," the number a trader actually watching the day cares
+    /// about most.
+    day_gain_loss: Option<String>,
     /// Point-to-point return since the earliest Buy of this stock in this
     /// portfolio — unlike XIRR, ignores cashflow timing (a single lump
     /// entry vs. several buys), so the two numbers answering different
@@ -161,6 +168,36 @@ async fn create_portfolio(state: State<'_, AppState>, name: String) -> Result<Po
     };
     state.portfolios.create(&portfolio).await.map_err(|e| e.to_string())?;
     Ok(PortfolioView { id: portfolio.id.to_string(), name: portfolio.name })
+}
+
+/// Deletes a portfolio AND everything scoped to it — every transaction,
+/// holding snapshot, and alert rule for it — since a portfolio with
+/// dangling holding/transaction rows pointing at a deleted portfolio_id
+/// would corrupt every other command that lists by portfolio. This is a
+/// real, permanent data loss (not a soft-delete), which is why the UI
+/// gates it behind the same two-click ConfirmButton pattern used for
+/// row-level removal elsewhere, not a single click.
+///
+/// Deliberately does NOT touch the `instrument` table — instruments are
+/// shared across portfolios and Watchlist (HLD Section 5.1), so deleting
+/// one family member's portfolio must never remove a ticker another
+/// portfolio still holds or that's just being watched.
+#[tauri::command]
+async fn delete_portfolio(state: State<'_, AppState>, portfolio_id: String) -> Result<(), String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+
+    let holdings = state.holdings.list_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())?;
+    for h in &holdings {
+        state.transactions.delete_for_instrument(portfolio_id, h.instrument_id).await.map_err(|e| e.to_string())?;
+        state.holdings.delete_snapshot(portfolio_id, h.instrument_id).await.map_err(|e| e.to_string())?;
+    }
+
+    let alerts = state.alert_rules.list_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())?;
+    for a in &alerts {
+        state.alert_rules.delete(a.id).await.map_err(|e| e.to_string())?;
+    }
+
+    state.portfolios.delete(portfolio_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -538,6 +575,7 @@ struct HoldingMetrics {
     ltp: Option<Decimal>,
     previous_close: Option<Decimal>,
     day_change_pct: Option<f64>,
+    day_gain_loss: Option<String>,
     cagr_pct: Option<f64>,
     simple_interest_value: Option<String>,
     years_held: Option<f64>,
@@ -564,6 +602,10 @@ async fn compute_holding_metrics(
             let pct = ((current - prev) / prev).round_dp(6);
             pct.to_string().parse::<f64>().ok()
         }
+        _ => None,
+    };
+    let day_gain_loss = match (ltp, previous_close) {
+        (Some(current), Some(prev)) => Some((h.quantity * (current - prev)).round_dp(2).to_string()),
         _ => None,
     };
 
@@ -597,6 +639,7 @@ async fn compute_holding_metrics(
         ltp,
         previous_close,
         day_change_pct,
+        day_gain_loss,
         cagr_pct,
         simple_interest_value,
         years_held,
@@ -644,6 +687,7 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String, si_rate
             market_value: m.market_value,
             unrealized_pnl: m.unrealized_pnl,
             day_change_pct: m.day_change_pct,
+            day_gain_loss: m.day_gain_loss,
             cagr_pct: m.cagr_pct,
             simple_interest_value_at_9_5_pct: m.simple_interest_value,
             years_held: m.years_held,
@@ -1024,8 +1068,17 @@ struct AlertRuleView {
     /// "this has fired at least once" record; `is_triggered_now` is
     /// today's read against the latest cached price.
     is_triggered_now: bool,
+    /// Within 2% of the threshold but not yet crossed it — a softer,
+    /// distinct "heads up" state from is_triggered_now, meant for a gentler
+    /// pulse animation rather than the full alert blink.
+    is_nearing: bool,
     current_price: Option<String>,
 }
+
+/// How close counts as "nearing" a stop-loss/target — 2% of the threshold
+/// price. A named constant rather than a magic number, since this exact
+/// figure is a judgment call worth being able to find and tune later.
+const ALERT_NEARING_THRESHOLD_PCT: f64 = 0.02;
 
 #[tauri::command]
 async fn create_alert_rule(
@@ -1082,6 +1135,31 @@ async fn list_alert_rules(state: State<'_, AppState>, portfolio_id: String) -> R
             })
             .unwrap_or(false);
 
+        // "Nearing" only makes sense before the alert has actually fired —
+        // once triggered, it's not a warning anymore, it's the real thing.
+        let is_nearing = !is_triggered_now
+            && current_price
+                .map(|price| {
+                    if rule.threshold_price.is_zero() {
+                        return false;
+                    }
+                    let distance = ((price - rule.threshold_price) / rule.threshold_price).abs();
+                    let distance_f64 = distance.round_dp(6).to_string().parse::<f64>().unwrap_or(f64::MAX);
+                    let approaching = match rule.condition {
+                        // Only "nearing" if moving toward the threshold from
+                        // the safe side — a stop-loss at 100 with price at
+                        // 500 and falling isn't "nearing" yet even if some
+                        // future 2% window would eventually say so; only the
+                        // current distance matters, direction doesn't need
+                        // separate tracking since price is checked live each
+                        // call.
+                        AlertCondition::StopLoss => price > rule.threshold_price,
+                        AlertCondition::Target => price < rule.threshold_price,
+                    };
+                    approaching && distance_f64 <= ALERT_NEARING_THRESHOLD_PCT
+                })
+                .unwrap_or(false);
+
         // Durably record the first time this fires — see the trait doc
         // comment on mark_triggered for why this is one-way.
         if is_triggered_now && !rule.triggered {
@@ -1098,6 +1176,7 @@ async fn list_alert_rules(state: State<'_, AppState>, portfolio_id: String) -> R
             threshold_price: rule.threshold_price.to_string(),
             triggered: rule.triggered || is_triggered_now,
             is_triggered_now,
+            is_nearing,
             current_price: current_price.map(|p| p.to_string()),
         });
     }
@@ -1697,6 +1776,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_portfolios,
             create_portfolio,
+            delete_portfolio,
             get_dashboard_summary,
             list_holdings,
             list_instruments,

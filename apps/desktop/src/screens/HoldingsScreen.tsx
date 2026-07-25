@@ -255,6 +255,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
     | "previous_close"
     | "last_price"
     | "day_change_pct"
+    | "day_gain_loss"
     | "volume"
     | "market_value"
     | "unrealized_pnl"
@@ -277,6 +278,8 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
         return h.last_price != null ? parseNumeric(h.last_price) : -Infinity;
       case "day_change_pct":
         return h.day_change_pct ?? -Infinity;
+      case "day_gain_loss":
+        return h.day_gain_loss != null ? parseNumeric(h.day_gain_loss) : -Infinity;
       case "volume":
         return volumeBySymbol[h.symbol] ?? -1;
       case "market_value":
@@ -412,6 +415,9 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                 <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_change_pct")}>
                   Day chg %{sortIndicator("day_change_pct")}
                 </th>
+                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_gain_loss")}>
+                  Day Gain/Loss{sortIndicator("day_gain_loss")}
+                </th>
                 <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("volume")}>
                   Volume{sortIndicator("volume")}
                 </th>
@@ -455,6 +461,14 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
                     <td>{fmtMoney(h.last_price)}</td>
                     <td style={{ color: h.day_change_pct != null ? pnlColor(h.day_change_pct) : colors.textMuted, fontWeight: 600 }}>
                       {h.day_change_pct != null ? `${(h.day_change_pct * 100).toFixed(2)}%` : "—"}
+                    </td>
+                    <td
+                      style={{
+                        color: h.day_gain_loss != null ? pnlColor(parseFloat(h.day_gain_loss)) : colors.textMuted,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {fmtMoney(h.day_gain_loss)}
                     </td>
                     <td>{volumeBySymbol[h.symbol] != null ? volumeBySymbol[h.symbol].toLocaleString() : "—"}</td>
                     <td>{fmtMoney(h.market_value)}</td>
@@ -505,7 +519,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
               })}
               {holdings.length === 0 && (
                 <tr>
-                  <td colSpan={13} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
+                  <td colSpan={14} style={{ padding: "12px 0", color: colors.textMuted, fontSize: 12 }}>
                     No holdings in this portfolio yet — record a buy below.
                   </td>
                 </tr>

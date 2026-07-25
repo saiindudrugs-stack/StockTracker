@@ -31,6 +31,13 @@ pub trait PortfolioRepository: Send + Sync {
     async fn create(&self, portfolio: &Portfolio) -> Result<(), RepositoryError>;
     async fn list_all(&self) -> Result<Vec<Portfolio>, RepositoryError>;
     async fn get(&self, id: Uuid) -> Result<Portfolio, RepositoryError>;
+    /// Deletes the portfolio row itself only — deliberately does NOT
+    /// cascade to transactions/holdings/alert_rules for it. The Tauri
+    /// command layer (delete_portfolio in main.rs) is responsible for the
+    /// cascade, since that's an application-level policy decision (should
+    /// deleting a portfolio ever be silent data loss?) rather than
+    /// something this storage-layer trait should decide unilaterally.
+    async fn delete(&self, id: Uuid) -> Result<(), RepositoryError>;
 }
 
 /// The append-only transaction ledger (SQLite+SQLCipher in production, per

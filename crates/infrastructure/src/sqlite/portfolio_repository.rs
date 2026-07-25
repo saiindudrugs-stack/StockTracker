@@ -95,6 +95,15 @@ impl PortfolioRepository for SqlitePortfolioRepository {
             .map_err(|_| RepositoryError::NotFound(format!("portfolio {id}")))?;
         parse_portfolio(row)
     }
+
+    async fn delete(&self, id: Uuid) -> Result<(), RepositoryError> {
+        self.pool
+            .with_conn(move |conn| {
+                conn.execute("DELETE FROM portfolio WHERE id = ?1", params![id.to_string()])?;
+                Ok(())
+            })
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -145,6 +154,19 @@ mod tests {
         let pool = SqlitePool::open_in_memory().unwrap();
         let repo = SqlitePortfolioRepository::new(pool);
         let result = repo.get(Uuid::new_v4()).await;
+        assert!(matches!(result, Err(RepositoryError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn delete_removes_the_portfolio() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let repo = SqlitePortfolioRepository::new(pool);
+        let portfolio = sample("Temp");
+
+        repo.create(&portfolio).await.unwrap();
+        repo.delete(portfolio.id).await.unwrap();
+
+        let result = repo.get(portfolio.id).await;
         assert!(matches!(result, Err(RepositoryError::NotFound(_))));
     }
 }

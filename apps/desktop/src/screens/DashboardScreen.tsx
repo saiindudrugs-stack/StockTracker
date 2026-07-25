@@ -194,29 +194,48 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
             </p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {alertRules.map((a) => (
-                <div
-                  key={a.id}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    fontSize: 12,
-                    padding: "4px 8px",
-                    borderRadius: 4,
-                    background: a.is_triggered_now ? (a.condition === "stop_loss" ? "#FBE4E2" : "#DFF3E3") : "transparent",
-                  }}
-                >
-                  <span style={{ fontWeight: a.is_triggered_now ? 700 : 400 }}>
-                    {a.is_triggered_now ? "⚠ " : ""}
-                    {a.symbol} {a.condition === "stop_loss" ? "≤" : "≥"} ₹{a.threshold_price}
-                    {a.current_price != null && <span style={{ color: colors.textMuted }}> (now ₹{a.current_price})</span>}
-                  </span>
-                  <button onClick={() => handleDismissAlert(a.id)} style={{ fontSize: 11 }}>
-                    Dismiss
-                  </button>
-                </div>
-              ))}
+              {alertRules.map((a) => {
+                // stop_loss uses amber (matches the "falling" convention
+                // already established for the ±3.5% day-move flash),
+                // target uses green (matches "rising"). Triggered gets the
+                // full blink; nearing-but-not-triggered gets the gentler
+                // pulse — see the keyframe doc comment in App.tsx.
+                const animation = a.is_triggered_now
+                  ? a.condition === "stop_loss"
+                    ? "flash-amber"
+                    : "flash-green"
+                  : a.is_nearing
+                  ? a.condition === "stop_loss"
+                    ? "pulse-amber"
+                    : "pulse-green"
+                  : undefined;
+                return (
+                  <div
+                    key={a.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontSize: 12,
+                      padding: "4px 8px",
+                      borderRadius: 4,
+                      animation: animation ? `${animation} 1.4s ease-in-out infinite` : undefined,
+                    }}
+                  >
+                    <span style={{ fontWeight: a.is_triggered_now ? 700 : 400 }}>
+                      {a.is_triggered_now ? "⚠ " : a.is_nearing ? "近 " : ""}
+                      {a.symbol} {a.condition === "stop_loss" ? "≤" : "≥"} ₹{a.threshold_price}
+                      {a.current_price != null && <span style={{ color: colors.textMuted }}> (now ₹{a.current_price})</span>}
+                      {a.is_nearing && !a.is_triggered_now && (
+                        <span style={{ color: colors.textMuted, fontStyle: "italic" }}> — nearing</span>
+                      )}
+                    </span>
+                    <button onClick={() => handleDismissAlert(a.id)} style={{ fontSize: 11 }}>
+                      Dismiss
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

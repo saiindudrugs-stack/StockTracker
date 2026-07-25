@@ -22,6 +22,11 @@ import type {
 export const api = {
   listPortfolios: () => invoke<PortfolioView[]>("list_portfolios"),
   createPortfolio: (name: string) => invoke<PortfolioView>("create_portfolio", { name }),
+  // Deletes the portfolio AND everything scoped to it (transactions,
+  // holdings, alert rules) — real, permanent data loss. See the doc
+  // comment on delete_portfolio in main.rs for why this is safe re:
+  // shared instruments (it never touches those).
+  deletePortfolio: (portfolioId: string) => invoke<void>("delete_portfolio", { portfolioId }),
 
   getDashboardSummary: (portfolioId: string) =>
     invoke<DashboardSummary>("get_dashboard_summary", { portfolioId }),

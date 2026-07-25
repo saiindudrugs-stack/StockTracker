@@ -1,17 +1,20 @@
 import { useState } from "react";
 import type { PortfolioView } from "../lib/types";
 import { colors } from "../lib/theme";
+import { ConfirmButton } from "./ConfirmButton";
 
 export function PortfolioTabs({
   portfolios,
   activeId,
   onSelect,
   onCreate,
+  onDelete,
 }: {
   portfolios: PortfolioView[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onCreate: (name: string) => void;
+  onDelete: (id: string) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
@@ -37,22 +40,39 @@ export function PortfolioTabs({
       {portfolios.map((p) => {
         const isActive = p.id === activeId;
         return (
-          <button
+          <span
             key={p.id}
-            onClick={() => onSelect(p.id)}
             style={{
-              fontSize: 12,
-              padding: "5px 12px",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
               borderRadius: 6,
               border: `1px solid ${isActive ? colors.accent : colors.border}`,
               background: isActive ? colors.surface : "transparent",
-              color: isActive ? colors.accent : colors.textMuted,
-              cursor: "pointer",
-              fontWeight: isActive ? 600 : 400,
+              paddingRight: 4,
             }}
           >
-            {p.name}
-          </button>
+            <button
+              onClick={() => onSelect(p.id)}
+              style={{
+                fontSize: 12,
+                padding: "5px 8px 5px 12px",
+                border: "none",
+                background: "transparent",
+                color: isActive ? colors.accent : colors.textMuted,
+                cursor: "pointer",
+                fontWeight: isActive ? 600 : 400,
+              }}
+            >
+              {p.name}
+            </button>
+            <ConfirmButton
+              label="×"
+              confirmLabel="Delete portfolio?"
+              onConfirm={() => onDelete(p.id)}
+              style={{ padding: "1px 5px", fontSize: 12 }}
+            />
+          </span>
         );
       })}
 

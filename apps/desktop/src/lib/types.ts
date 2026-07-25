@@ -27,6 +27,7 @@ export interface HoldingView {
   market_value: string | null;
   unrealized_pnl: string | null;
   day_change_pct: number | null;
+  day_gain_loss: string | null;
   // CAGR: plain point-to-point return since the earliest Buy of this stock
   // in this portfolio, annualized — different from XIRR (money-weighted,
   // accounts for timing of each cashflow). null when there's no Buy date
@@ -125,6 +126,7 @@ export interface AlertRuleView {
   threshold_price: string;
   triggered: boolean;
   is_triggered_now: boolean;
+  is_nearing: boolean;
   current_price: string | null;
 }
 
