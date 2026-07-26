@@ -1,5 +1,9 @@
 name: Build desktop installers
 
+# Trigger run: verifying TAURI_SIGNING_PRIVATE_KEY / _PASSWORD secrets are
+# picked up on a genuinely fresh build (added after those secrets were
+# saved). No functional change — this comment is the only edit.
+#
 # Manual trigger (Actions tab -> "Build desktop installers" -> "Run workflow")
 # plus automatic builds on every push to main and on version tags, so a tag
 # push like `v0.1.0` produces a GitHub Release with all three installers
@@ -40,6 +44,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # Caches ~/.cargo and target/ keyed on Cargo.lock + OS + Rust version.
+      # Without this, every run recompiles the entire dependency tree from
+      # scratch (wry/tao alone account for several minutes) — worth doing
+      # given how many iterations this workflow has already gone through.
+      - name: Cache Rust dependencies and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
 
       # Tauri's Linux build links against webkit2gtk/libsoup at build time.
       - name: Install Linux system dependencies
@@ -58,6 +73,14 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      # Fails the build on any TypeScript error instead of shipping a
+      # broken frontend — added after the multi-portfolio feature made the
+      # frontend big enough that a silent type error was a real risk, not
+      # just a theoretical one.
+      - name: Type-check frontend
+        working-directory: apps/desktop
+        run: npx tsc --noEmit
+
       - name: Run engine test suite (domain + application + infrastructure)
         run: cargo test -p pm-domain -p pm-application -p pm-infrastructure
 
@@ -65,6 +88,15 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the update artifacts so the in-app "Check for Updates"
+          # button can verify them against the public key baked into
+          # tauri.conf.json. These two must be added as repo secrets
+          # (Settings -> Secrets and variables -> Actions) — they are
+          # NOT committed anywhere in this repo. If they're unset, this
+          # step still builds plain installers, just without update
+          # manifests attached.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
           # Only actually creates a GitHub Release + attaches installers
@@ -73,8 +105,16 @@ jobs:
           # without publishing a public release.
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('Portfolio Manager {0}', github.ref_name) || '' }}
+          # Still a draft on purpose — one manual "Publish release" click
+          # on GitHub remains, as a final look-before-it-ships gate. What
+          # changed: prerelease is now false. A GitHub prerelease is
+          # PERMANENTLY excluded from the "latest release" that the
+          # in-app updater's endpoint (.../releases/latest/download/
+          # latest.json) resolves against — leaving this true would have
+          # meant "Check for Updates" could never find anything, ever,
+          # even after publishing.
           releaseDraft: true
-          prerelease: true
+          prerelease: false
 
       # Always upload as a workflow artifact too, so you can grab the
       # installer from the Actions run even on a plain push/manual trigger
