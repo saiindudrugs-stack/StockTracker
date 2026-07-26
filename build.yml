@@ -90,13 +90,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Signs the update artifacts so the in-app "Check for Updates"
           # button can verify them against the public key baked into
-          # tauri.conf.json. These two must be added as repo secrets
-          # (Settings -> Secrets and variables -> Actions) — they are
-          # NOT committed anywhere in this repo. If they're unset, this
-          # step still builds plain installers, just without update
-          # manifests attached.
+          # tauri.conf.json. These two secrets must exist under repo
+          # Settings -> Secrets and variables -> Actions — they are NOT
+          # committed anywhere in this repo.
+          #
+          # Both the newer (v2) and older (v1) env var names are set here,
+          # pointing at the SAME two secrets — no extra secrets needed.
+          # This matches what tauri-action's own maintainers do in their
+          # own test workflow (tauri-apps/tauri-action/.github/workflows/
+          # test-action.yml sets both pairs together), after the newer
+          # name alone kept failing with "no private key" even with the
+          # secrets correctly present — a known inconsistency in how
+          # different tauri-action releases read the signing key.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
           # Only actually creates a GitHub Release + attaches installers
