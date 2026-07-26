@@ -43,7 +43,7 @@ export function NavBar({ active, onSelect }: { active: ScreenId; onSelect: (id: 
               padding: "8px 12px",
               background: "transparent",
               border: "none",
-              borderBottom: `3px solid ${isActive ? colors.accent : "transparent"}`,
+              borderBottom: `4px solid ${isActive ? colors.accent : "transparent"}`,
               cursor: "pointer",
               color: isActive ? colors.accent : colors.textMuted,
               fontWeight: isActive ? 600 : 400,

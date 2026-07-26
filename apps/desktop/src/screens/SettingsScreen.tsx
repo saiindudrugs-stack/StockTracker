@@ -84,11 +84,16 @@ export function SettingsScreen({
       </p>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
-        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Software update</p>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>
+          Software update <span style={{ color: colors.textMuted, fontWeight: 400 }}>(paused)</span>
+        </p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Checks the GitHub repo's latest Release for a newer signed build — no more manual
-          rebuild-and-reinstall. Only ever finds something once a new version tag has actually
-          been pushed and its release build finished on GitHub Actions.
+          Temporarily paused, not removed — the release pipeline hit a persistent signing failure
+          ("public key found, but no private key") that held up even after the signing secrets
+          were verified correct and confirmed present in the build step, pointing to a bug in the
+          signing tool itself rather than anything in this app or its GitHub setup. The button
+          below is disabled so it doesn't silently fail — once the signing pipeline is revisited
+          and working, this re-enables with no other changes needed.
         </p>
         {updateStatus === "available" && updateVersion ? (
           <div style={{ ...panelStyle, borderColor: colors.accent, marginBottom: 10 }}>
@@ -101,12 +106,8 @@ export function SettingsScreen({
             </button>
           </div>
         ) : null}
-        <button onClick={handleCheckForUpdates} disabled={updateStatus === "checking" || updateStatus === "downloading"}>
-          {updateStatus === "checking"
-            ? "Checking…"
-            : updateStatus === "downloading"
-            ? "Downloading update…"
-            : "Check for Updates"}
+        <button onClick={handleCheckForUpdates} disabled title="Paused until the signing pipeline is fixed — see note above">
+          Check for Updates
         </button>
         {updateStatus === "up-to-date" && (
           <p style={{ fontSize: 12, color: colors.success, marginTop: 8 }}>You're on the latest version.</p>
