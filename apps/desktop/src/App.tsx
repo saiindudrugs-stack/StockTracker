@@ -98,6 +98,15 @@ export default function App() {
           0%, 100% { background-color: rgba(30, 122, 52, 0.06); }
           50% { background-color: rgba(30, 122, 52, 0.18); }
         }
+        /* Subtle vertical dividers between columns, for tables that opt in
+           via className="data-table" — a shared rule rather than adding a
+           borderRight to every single <td>/<th> across every table. */
+        .data-table td, .data-table th {
+          border-right: 1px solid #EAEAEA;
+        }
+        .data-table td:last-child, .data-table th:last-child {
+          border-right: none;
+        }
       `}</style>
       <PortfolioTabs
         portfolios={portfolios}

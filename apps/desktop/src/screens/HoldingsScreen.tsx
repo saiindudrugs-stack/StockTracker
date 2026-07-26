@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { api } from "../lib/tauri";
 import type { HoldingView, InstrumentView } from "../lib/types";
-import { colors, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney } from "../lib/theme";
+import { colors, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 import { AlertSetter } from "../components/AlertSetter";
 
@@ -394,47 +394,47 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
             </p>
           )}
 
-          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+          <table className="data-table" style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%", fontSize: 13 }}>
             <thead>
-              <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
-                <th style={{ padding: "6px 8px 6px 0", cursor: "pointer" }} onClick={() => handleSortClick("symbol")}>
+              <tr style={tableHeaderRow}>
+                <th style={{ ...tableHeaderCell, ...firstHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("symbol")}>
                   Symbol{sortIndicator("symbol")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("quantity")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("quantity")}>
                   Qty{sortIndicator("quantity")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("avg_cost")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("avg_cost")}>
                   Avg cost{sortIndicator("avg_cost")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("previous_close")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("previous_close")}>
                   Prev Close{sortIndicator("previous_close")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("last_price")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("last_price")}>
                   LTP{sortIndicator("last_price")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_change_pct")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("day_change_pct")}>
                   Day chg %{sortIndicator("day_change_pct")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_gain_loss")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("day_gain_loss")}>
                   Day Gain/Loss{sortIndicator("day_gain_loss")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("volume")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("volume")}>
                   Volume{sortIndicator("volume")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("market_value")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("market_value")}>
                   Mkt value{sortIndicator("market_value")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("unrealized_pnl")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("unrealized_pnl")}>
                   Unreal. P/L{sortIndicator("unrealized_pnl")}
                 </th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("cagr_pct")}>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("cagr_pct")}>
                   CAGR %{sortIndicator("cagr_pct")}
                 </th>
-                <th>SI @{siRatePct || "9.5"}% vs Actual</th>
-                <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("xirr")}>
+                <th style={tableHeaderCell}>SI @{siRatePct || "9.5"}% vs Actual</th>
+                <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("xirr")}>
                   XIRR %{sortIndicator("xirr")}
                 </th>
-                <th></th>
+                <th style={{ ...tableHeaderCell, ...lastHeaderCell }}></th>
               </tr>
             </thead>
             <tbody>

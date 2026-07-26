@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../lib/tauri";
 import type { PortfolioAnalysisView } from "../lib/types";
-import { colors, panelStyle } from "../lib/theme";
+import { colors, panelStyle, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell } from "../lib/theme";
 
 function correlationColor(c: number): string {
   // Green for positive correlation (move together), red for negative
@@ -77,13 +77,13 @@ export function AnalysisScreen({ portfolioId }: { portfolioId: string }) {
             {analysis.stocks.length === 0 ? (
               <p style={{ fontSize: 12, color: colors.textMuted }}>No stocks with enough history yet.</p>
             ) : (
-              <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+              <table className="data-table" style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
                 <thead>
-                  <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
-                    <th style={{ padding: "4px 8px 4px 0" }}>Symbol</th>
-                    <th>Ann. Return</th>
-                    <th>Ann. Volatility</th>
-                    <th>Read</th>
+                  <tr style={tableHeaderRow}>
+                    <th style={{ ...tableHeaderCell, ...firstHeaderCell }}>Symbol</th>
+                    <th style={tableHeaderCell}>Ann. Return</th>
+                    <th style={tableHeaderCell}>Ann. Volatility</th>
+                    <th style={{ ...tableHeaderCell, ...lastHeaderCell }}>Read</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -115,12 +115,12 @@ export function AnalysisScreen({ portfolioId }: { portfolioId: string }) {
                 Need at least 2 stocks with history to compute correlation.
               </p>
             ) : (
-              <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+              <table className="data-table" style={{ borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
-                  <tr>
-                    <th style={{ padding: 4 }}></th>
-                    {symbols.map((s) => (
-                      <th key={s} style={{ padding: 4, textAlign: "center" }}>
+                  <tr style={tableHeaderRow}>
+                    <th style={{ ...tableHeaderCell, ...firstHeaderCell }}></th>
+                    {symbols.map((s, i) => (
+                      <th key={s} style={{ ...tableHeaderCell, ...(i === symbols.length - 1 ? lastHeaderCell : {}), textAlign: "center" }}>
                         {s}
                       </th>
                     ))}

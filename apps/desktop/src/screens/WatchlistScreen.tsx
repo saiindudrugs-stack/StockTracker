@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri";
 import type { InstrumentView, MarketSnapshotView, TechnicalAnalysisView } from "../lib/types";
-import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney } from "../lib/theme";
+import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 
 const AUTO_REFRESH_MS = 30_000;
@@ -239,46 +239,46 @@ export function WatchlistScreen() {
 
       {error && <p style={{ color: colors.danger }}>{error}</p>}
 
-      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+      <table className="data-table" style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
         <thead>
-          <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
-            <th style={{ padding: "6px 8px 6px 0", cursor: "pointer" }} onClick={() => handleSortClick("symbol")}>
+          <tr style={tableHeaderRow}>
+            <th style={{ ...tableHeaderCell, ...firstHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("symbol")}>
               Symbol{sortIndicator("symbol")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("previous_close")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("previous_close")}>
               Prev Close{sortIndicator("previous_close")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("price")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("price")}>
               Price{sortIndicator("price")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_change_pct")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("day_change_pct")}>
               Day chg %{sortIndicator("day_change_pct")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_high")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("day_high")}>
               Day High{sortIndicator("day_high")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("day_low")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("day_low")}>
               Day Low{sortIndicator("day_low")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("week52_high")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("week52_high")}>
               52W High{sortIndicator("week52_high")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("week52_low")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("week52_low")}>
               52W Low{sortIndicator("week52_low")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("volume")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("volume")}>
               Volume{sortIndicator("volume")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("rsi")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("rsi")}>
               RSI(14){sortIndicator("rsi")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("phase")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("phase")}>
               Phase{sortIndicator("phase")}
             </th>
-            <th style={{ cursor: "pointer" }} onClick={() => handleSortClick("signal")}>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("signal")}>
               Signal{sortIndicator("signal")}
             </th>
-            <th></th>
+            <th style={{ ...tableHeaderCell, ...lastHeaderCell }}></th>
           </tr>
         </thead>
         <tbody>

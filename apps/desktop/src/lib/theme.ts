@@ -35,6 +35,37 @@ export const panelStyle: CSSProperties = {
   padding: 16,
 };
 
+/// Solid navy header band for data tables (Holdings, Watchlist, Mutual
+/// Funds, Analysis) — matches the wireframes shown before these screens
+/// were built; the plain-white/thin-border header the tables originally
+/// shipped with never carried that treatment over. Apply tableHeaderRow to
+/// the <tr> and tableHeaderCell to each <th> inside it; the first and last
+/// <th> in a row also need firstHeaderCell / lastHeaderCell merged in (via
+/// spread) so the rounded corners land on the outer edges instead of
+/// every cell.
+export const tableHeaderRow: CSSProperties = {
+  background: colors.navy,
+  textAlign: "left",
+};
+
+export const tableHeaderCell: CSSProperties = {
+  color: "#E6F1FB",
+  padding: "8px 10px",
+  fontWeight: 500,
+};
+
+export const firstHeaderCell: CSSProperties = {
+  borderTopLeftRadius: 8,
+  borderBottomLeftRadius: 8,
+  paddingLeft: 14,
+};
+
+export const lastHeaderCell: CSSProperties = {
+  borderTopRightRadius: 8,
+  borderBottomRightRadius: 8,
+  paddingRight: 14,
+};
+
 export function recommendationColor(rec: string | null): string {
   switch (rec) {
     case "Buy":

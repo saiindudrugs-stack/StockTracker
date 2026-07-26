@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/tauri";
 import type { MfHoldingView, MfSchemeSearchResultView } from "../lib/types";
-import { colors, panelStyle, pnlColor, fmtMoney } from "../lib/theme";
+import { colors, panelStyle, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 
 export function MutualFundsScreen({ portfolioId }: { portfolioId: string }) {
@@ -173,19 +173,19 @@ export function MutualFundsScreen({ portfolioId }: { portfolioId: string }) {
       {refreshMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>{refreshMsg}</p>}
       {error && <p style={{ color: colors.danger }}>{error}</p>}
 
-      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13, marginBottom: 24 }}>
+      <table className="data-table" style={{ borderCollapse: "collapse", width: "100%", fontSize: 13, marginBottom: 24 }}>
         <thead>
-          <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
-            <th style={{ padding: "6px 8px 6px 0" }}>Scheme</th>
-            <th>Category</th>
-            <th>Units</th>
-            <th>Avg NAV</th>
-            <th>Current NAV</th>
-            <th>NAV chg %</th>
-            <th>Value</th>
-            <th>Unreal. P/L</th>
-            <th>CAGR %</th>
-            <th></th>
+          <tr style={tableHeaderRow}>
+            <th style={{ ...tableHeaderCell, ...firstHeaderCell }}>Scheme</th>
+            <th style={tableHeaderCell}>Category</th>
+            <th style={tableHeaderCell}>Units</th>
+            <th style={tableHeaderCell}>Avg NAV</th>
+            <th style={tableHeaderCell}>Current NAV</th>
+            <th style={tableHeaderCell}>NAV chg %</th>
+            <th style={tableHeaderCell}>Value</th>
+            <th style={tableHeaderCell}>Unreal. P/L</th>
+            <th style={tableHeaderCell}>CAGR %</th>
+            <th style={{ ...tableHeaderCell, ...lastHeaderCell }}></th>
           </tr>
         </thead>
         <tbody>
