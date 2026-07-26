@@ -49,7 +49,7 @@ export function PortfolioTabs({
               padding: "6px 10px",
               background: "transparent",
               border: "none",
-              borderBottom: `2px solid ${isActive ? colors.accent : "transparent"}`,
+              borderBottom: `3px solid ${isActive ? colors.accent : "transparent"}`,
               color: isActive ? colors.accent : colors.textMuted,
               fontWeight: isActive ? 600 : 400,
               cursor: "pointer",
