@@ -84,6 +84,25 @@ jobs:
       - name: Run engine test suite (domain + application + infrastructure)
         run: cargo test -p pm-domain -p pm-application -p pm-infrastructure
 
+      # Diagnostic only — two identical "no private key" failures in a row
+      # despite the secrets existing under the right names means the next
+      # useful fact isn't "try a different fix," it's "prove what's
+      # actually in the environment at build time." This prints ONLY the
+      # character count of each secret, never the value itself (GitHub
+      # Actions also auto-redacts any text matching a registered secret's
+      # value in logs regardless, as a second layer of protection). A
+      # length of 0 means the secret is empty/not reaching this step; a
+      # length near ~300 (matching the actual key's length) means it's
+      # present and the problem is elsewhere. Safe to remove once this is
+      # resolved.
+      - name: Diagnose signing secrets (prints length only, never the value)
+        run: |
+          echo "TAURI_SIGNING_PRIVATE_KEY length: ${#TAURI_SIGNING_PRIVATE_KEY}"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD length: ${#TAURI_SIGNING_PRIVATE_KEY_PASSWORD}"
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
       - name: Build installer
         uses: tauri-apps/tauri-action@v0
         env:
