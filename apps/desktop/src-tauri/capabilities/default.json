@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for the updater (Check for Updates in Settings) and process (relaunch after install) plugins. Every custom command this app defines itself (list_holdings, record_buy, etc.) is callable without any entry here — Tauri's capability system only gates plugin commands, not the app's own #[tauri::command] functions, which is why nothing was needed here before these two plugins were added.",
+  "windows": ["main"],
+  "permissions": ["updater:default", "process:default"]
+}

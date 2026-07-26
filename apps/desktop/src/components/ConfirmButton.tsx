@@ -14,13 +14,23 @@ export function ConfirmButton({
   confirmLabel,
   onConfirm,
   style,
+  onConfirmingChange,
 }: {
   label: string;
   confirmLabel?: string;
   onConfirm: () => void;
   style?: CSSProperties;
+  /// Fires whenever the confirm/cancel step opens or closes — lets a
+  /// parent (e.g. PortfolioTabs, which hides this control until hovered)
+  /// keep it visible while the user is mid-confirmation, rather than it
+  /// vanishing under their cursor before they can click Confirm.
+  onConfirmingChange?: (confirming: boolean) => void;
 }) {
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirmingState] = useState(false);
+  function setConfirming(value: boolean) {
+    setConfirmingState(value);
+    onConfirmingChange?.(value);
+  }
 
   if (confirming) {
     return (

@@ -1,6 +1,6 @@
 [package]
 name = "pm-desktop"
-version = "0.12.0"
+version = "0.14.0"
 edition = "2021"
 
 [build-dependencies]
@@ -11,6 +11,8 @@ pm-domain = { path = "../../../crates/domain" }
 pm-application = { path = "../../../crates/application" }
 pm-infrastructure = { path = "../../../crates/infrastructure" }
 tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

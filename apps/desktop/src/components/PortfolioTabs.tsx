@@ -1,20 +1,22 @@
 import { useState } from "react";
 import type { PortfolioView } from "../lib/types";
 import { colors } from "../lib/theme";
-import { ConfirmButton } from "./ConfirmButton";
 
+/// Deliberately no remove/delete control here at all — that's rare enough
+/// (per explicit feedback: "something we don't use often") that it belongs
+/// in Settings' "Manage portfolios" section instead, not sitting in the
+/// tab bar you look at constantly. Keeps this bar to exactly what it's for:
+/// picking which portfolio you're looking at.
 export function PortfolioTabs({
   portfolios,
   activeId,
   onSelect,
   onCreate,
-  onDelete,
 }: {
   portfolios: PortfolioView[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onCreate: (name: string) => void;
-  onDelete: (id: string) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
@@ -31,48 +33,30 @@ export function PortfolioTabs({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 6,
-        padding: "10px 16px",
-        borderBottom: `1px solid ${colors.border}`,
+        gap: 4,
+        padding: "10px 16px 8px",
         flexShrink: 0,
       }}
     >
       {portfolios.map((p) => {
         const isActive = p.id === activeId;
         return (
-          <span
+          <button
             key={p.id}
+            onClick={() => onSelect(p.id)}
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              borderRadius: 6,
-              border: `1px solid ${isActive ? colors.accent : colors.border}`,
-              background: isActive ? colors.surface : "transparent",
-              paddingRight: 4,
+              fontSize: 12,
+              padding: "6px 10px",
+              background: "transparent",
+              border: "none",
+              borderBottom: `2px solid ${isActive ? colors.accent : "transparent"}`,
+              color: isActive ? colors.accent : colors.textMuted,
+              fontWeight: isActive ? 600 : 400,
+              cursor: "pointer",
             }}
           >
-            <button
-              onClick={() => onSelect(p.id)}
-              style={{
-                fontSize: 12,
-                padding: "5px 8px 5px 12px",
-                border: "none",
-                background: "transparent",
-                color: isActive ? colors.accent : colors.textMuted,
-                cursor: "pointer",
-                fontWeight: isActive ? 600 : 400,
-              }}
-            >
-              {p.name}
-            </button>
-            <ConfirmButton
-              label="×"
-              confirmLabel="Delete portfolio?"
-              onConfirm={() => onDelete(p.id)}
-              style={{ padding: "1px 5px", fontSize: 12 }}
-            />
-          </span>
+            {p.name}
+          </button>
         );
       })}
 

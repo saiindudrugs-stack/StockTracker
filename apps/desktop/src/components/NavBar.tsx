@@ -11,19 +11,21 @@ const ITEMS: { id: ScreenId; label: string; glyph: string }[] = [
   { id: "settings", label: "Settings", glyph: "\u2699" },
 ];
 
-export function NavRail({ active, onSelect }: { active: ScreenId; onSelect: (id: ScreenId) => void }) {
+/// Horizontal, sitting directly under PortfolioTabs — both rows live at the
+/// top now, rather than one at the top and one down the left edge, per
+/// explicit layout feedback that looking both top and left was
+/// distracting. Same active-state treatment as PortfolioTabs (a solid
+/// accent underline), so the two rows read as one consistent system
+/// instead of two different UI languages.
+export function NavBar({ active, onSelect }: { active: ScreenId; onSelect: (id: ScreenId) => void }) {
   return (
     <div
       style={{
-        width: 72,
         display: "flex",
-        flexDirection: "column",
         alignItems: "center",
-        gap: 4,
-        paddingTop: 16,
-        borderRight: `1px solid ${colors.border}`,
-        height: "100vh",
-        boxSizing: "border-box",
+        gap: 2,
+        padding: "0 16px",
+        borderBottom: `1px solid ${colors.border}`,
         flexShrink: 0,
       }}
     >
@@ -35,21 +37,21 @@ export function NavRail({ active, onSelect }: { active: ScreenId; onSelect: (id:
             onClick={() => onSelect(item.id)}
             title={item.label}
             style={{
-              width: 56,
-              padding: "10px 0",
               display: "flex",
-              flexDirection: "column",
               alignItems: "center",
-              gap: 2,
-              background: isActive ? colors.surface : "transparent",
+              gap: 6,
+              padding: "8px 12px",
+              background: "transparent",
               border: "none",
-              borderRadius: 8,
+              borderBottom: `2px solid ${isActive ? colors.accent : "transparent"}`,
               cursor: "pointer",
               color: isActive ? colors.accent : colors.textMuted,
+              fontWeight: isActive ? 600 : 400,
+              fontSize: 12,
             }}
           >
-            <span style={{ fontSize: 18 }}>{item.glyph}</span>
-            <span style={{ fontSize: 9 }}>{item.label}</span>
+            <span style={{ fontSize: 14 }}>{item.glyph}</span>
+            <span>{item.label}</span>
           </button>
         );
       })}

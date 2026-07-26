@@ -1,8 +1,60 @@
 import { useState } from "react";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { api } from "../lib/tauri";
+import type { PortfolioView } from "../lib/types";
 import { colors, panelStyle } from "../lib/theme";
+import { ConfirmButton } from "../components/ConfirmButton";
 
-export function SettingsScreen() {
+export function SettingsScreen({
+  portfolios,
+  onDeletePortfolio,
+}: {
+  portfolios: PortfolioView[];
+  onDeletePortfolio: (id: string) => void;
+}) {
+  const [updateStatus, setUpdateStatus] = useState<
+    "idle" | "checking" | "up-to-date" | "available" | "downloading" | "error"
+  >("idle");
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [updateNotes, setUpdateNotes] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  // Holds the actual Update object between "found one" and "install it" —
+  // check() and downloadAndInstall() are two separate steps so the user
+  // sees what's new before committing to the download.
+  const [pendingUpdate, setPendingUpdate] = useState<Awaited<ReturnType<typeof check>> | null>(null);
+
+  async function handleCheckForUpdates() {
+    setUpdateStatus("checking");
+    setUpdateError(null);
+    try {
+      const update = await check();
+      if (update) {
+        setPendingUpdate(update);
+        setUpdateVersion(update.version);
+        setUpdateNotes(update.body ?? null);
+        setUpdateStatus("available");
+      } else {
+        setUpdateStatus("up-to-date");
+      }
+    } catch (e) {
+      setUpdateStatus("error");
+      setUpdateError(String(e));
+    }
+  }
+
+  async function handleInstallUpdate() {
+    if (!pendingUpdate) return;
+    setUpdateStatus("downloading");
+    try {
+      await pendingUpdate.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      setUpdateStatus("error");
+      setUpdateError(String(e));
+    }
+  }
+
   const [aiEnabled, setAiEnabled] = useState(true);
   const [aiMode, setAiMode] = useState<"local" | "cloud">("local");
   const [confirmingReset, setConfirmingReset] = useState(false);
@@ -30,6 +82,39 @@ export function SettingsScreen() {
         The AI toggle below is real UI state but isn't wired to backend persistence yet — it'll
         reset on restart.
       </p>
+
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Software update</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
+          Checks the GitHub repo's latest Release for a newer signed build — no more manual
+          rebuild-and-reinstall. Only ever finds something once a new version tag has actually
+          been pushed and its release build finished on GitHub Actions.
+        </p>
+        {updateStatus === "available" && updateVersion ? (
+          <div style={{ ...panelStyle, borderColor: colors.accent, marginBottom: 10 }}>
+            <p style={{ fontSize: 12, fontWeight: 600, margin: "0 0 4px", color: colors.accent }}>
+              Version {updateVersion} is available
+            </p>
+            {updateNotes && <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px" }}>{updateNotes}</p>}
+            <button onClick={handleInstallUpdate} disabled={updateStatus === ("downloading" as typeof updateStatus)}>
+              Install & Restart
+            </button>
+          </div>
+        ) : null}
+        <button onClick={handleCheckForUpdates} disabled={updateStatus === "checking" || updateStatus === "downloading"}>
+          {updateStatus === "checking"
+            ? "Checking…"
+            : updateStatus === "downloading"
+            ? "Downloading update…"
+            : "Check for Updates"}
+        </button>
+        {updateStatus === "up-to-date" && (
+          <p style={{ fontSize: 12, color: colors.success, marginTop: 8 }}>You're on the latest version.</p>
+        )}
+        {updateStatus === "error" && updateError && (
+          <p style={{ fontSize: 12, color: colors.danger, marginTop: 8 }}>Update check failed: {updateError}</p>
+        )}
+      </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -132,6 +217,25 @@ export function SettingsScreen() {
           the Rust engine (crates/infrastructure/src/brokers/zerodha.rs) but nothing in the UI
           calls it anymore.
         </p>
+      </div>
+
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Manage portfolios</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
+          Removing a portfolio deletes every transaction, holding, and alert scoped to it — real,
+          permanent data loss. It never touches shared instruments, so it can't affect another
+          family member's portfolio or your Watchlist. Kept here rather than in the tab bar since
+          this is rare enough not to need a control you see constantly.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {portfolios.map((p) => (
+            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
+              <span>{p.name}</span>
+              <ConfirmButton label="Remove" confirmLabel="Yes, delete" onConfirm={() => onDeletePortfolio(p.id)} />
+            </div>
+          ))}
+          {portfolios.length === 0 && <p style={{ fontSize: 12, color: colors.textMuted, margin: 0 }}>No portfolios yet.</p>}
+        </div>
       </div>
 
       <div style={{ ...panelStyle, borderColor: colors.danger }}>
