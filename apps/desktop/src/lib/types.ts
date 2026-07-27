@@ -155,4 +155,30 @@ export interface MfHoldingView {
   years_held: number | null;
 }
 
-export type ScreenId = "dashboard" | "holdings" | "mutual-funds" | "watchlist" | "analysis" | "chart" | "settings";
+export interface RevenuePeriodView {
+  period_end: string;
+  revenue: string;
+  net_income: string | null;
+}
+
+export interface FundamentalsView {
+  sector: string | null;
+  industry: string | null;
+  description: string | null;
+  market_cap: string | null;
+  pe_ratio: string | null;
+  dividend_yield: string | null;
+  week52_high: string | null;
+  week52_low: string | null;
+  revenue_by_period: RevenuePeriodView[];
+}
+
+export interface NewsItemView {
+  title: string;
+  publisher: string;
+  link: string;
+  published_at: string;
+  is_regulatory: boolean;
+}
+
+export type ScreenId = "dashboard" | "holdings" | "mutual-funds" | "watchlist" | "analysis" | "chart" | "news" | "settings";

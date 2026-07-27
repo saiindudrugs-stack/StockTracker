@@ -31,6 +31,13 @@ pub struct YahooFinanceProvider {
 }
 
 impl YahooFinanceProvider {
+    /// Crate-visible only — yahoo_fundamentals_news.rs is a sibling module
+    /// (not a child), so it needs this to reuse the same client rather
+    /// than constructing a second one.
+    pub(crate) fn http_client(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     pub fn new() -> Self {
         Self {
             http: reqwest::Client::builder()

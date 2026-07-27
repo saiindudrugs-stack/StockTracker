@@ -50,6 +50,14 @@ struct AppState {
     prices: Arc<SqlitePriceRepository>,
     alert_rules: Arc<SqliteAlertRuleRepository>,
     market_data: Arc<CompositeMarketDataProvider<YahooFinanceProvider, AlphaVantageProvider>>,
+    /// Separate from `market_data` above deliberately: fetch_fundamentals
+    /// and fetch_news are inherent methods on YahooFinanceProvider itself
+    /// (News & Fundamentals is Yahoo-only for now, no fallback provider
+    /// for these two), not part of the MarketDataProvider trait the
+    /// composite wraps — so they need a concrete instance, not the trait
+    /// object. Cheap to have a second one; YahooFinanceProvider::new()
+    /// just builds an HTTP client, no shared state to duplicate.
+    yahoo_direct: Arc<YahooFinanceProvider>,
     mf_scheme_cache: Arc<SqliteMfSchemeCache>,
     mf_data_source: Arc<AmfiProvider>,
     app_settings: Arc<SqliteAppSettings>,
@@ -207,6 +215,107 @@ async fn delete_portfolio(state: State<'_, AppState>, portfolio_id: String) -> R
 async fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentView>, String> {
     let all = state.instruments.list_all().await.map_err(|e| e.to_string())?;
     Ok(all.into_iter().map(|i| InstrumentView { symbol: i.symbol, sector: i.sector }).collect())
+}
+
+/// Equities only (no mutual funds) — the left-pane ticker list on the News
+/// & Fundamentals screen, since revenue/fundamentals/news don't apply to a
+/// mutual fund unit the same way they do a company.
+#[tauri::command]
+async fn list_equity_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentView>, String> {
+    let equities = state.instruments.list_by_asset_class(AssetClass::Equity).await.map_err(|e| e.to_string())?;
+    Ok(equities.into_iter().map(|i| InstrumentView { symbol: i.symbol, sector: i.sector }).collect())
+}
+
+#[derive(Serialize)]
+struct RevenuePeriodView {
+    period_end: String,
+    revenue: String,
+    net_income: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FundamentalsView {
+    sector: Option<String>,
+    industry: Option<String>,
+    description: Option<String>,
+    market_cap: Option<String>,
+    pe_ratio: Option<String>,
+    dividend_yield: Option<String>,
+    week52_high: Option<String>,
+    week52_low: Option<String>,
+    revenue_by_period: Vec<RevenuePeriodView>,
+}
+
+/// Portfolio-agnostic, like get_market_snapshot — fundamentals are a
+/// property of the company, not of any one portfolio's holding of it.
+#[tauri::command]
+async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<FundamentalsView, String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+    let f = state
+        .yahoo_direct
+        .fetch_fundamentals(&instrument.symbol, &instrument.exchange)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(FundamentalsView {
+        sector: f.sector,
+        industry: f.industry,
+        description: f.description,
+        market_cap: f.market_cap.map(|d| d.to_string()),
+        pe_ratio: f.pe_ratio.map(|d| d.to_string()),
+        dividend_yield: f.dividend_yield.map(|d| d.to_string()),
+        week52_high: f.week52_high.map(|d| d.to_string()),
+        week52_low: f.week52_low.map(|d| d.to_string()),
+        revenue_by_period: f
+            .revenue_by_period
+            .into_iter()
+            .map(|p| RevenuePeriodView { period_end: p.period_end, revenue: p.revenue.to_string(), net_income: p.net_income.map(|d| d.to_string()) })
+            .collect(),
+    })
+}
+
+#[derive(Serialize)]
+struct NewsItemView {
+    title: String,
+    publisher: String,
+    link: String,
+    published_at: String,
+    is_regulatory: bool,
+}
+
+/// Top 5, regulatory-flagged items first — see the honesty note at the
+/// top of yahoo_fundamentals_news.rs for exactly what "regulatory" means
+/// here (a keyword match over headlines, not a verified separate filings
+/// feed).
+#[tauri::command]
+async fn get_stock_news(state: State<'_, AppState>, symbol: String) -> Result<Vec<NewsItemView>, String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+    let news = state
+        .yahoo_direct
+        .fetch_news(&instrument.symbol, &instrument.exchange)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(news
+        .into_iter()
+        .map(|n| NewsItemView {
+            title: n.title,
+            publisher: n.publisher,
+            link: n.link,
+            published_at: n.published_at.format("%Y-%m-%d %H:%M UTC").to_string(),
+            is_regulatory: n.is_regulatory,
+        })
+        .collect())
 }
 
 /// Adds a new ticker the user wants to track. No broker/exchange validation
@@ -1812,6 +1921,7 @@ fn main() {
                 prices: Arc::new(SqlitePriceRepository::new(pool.clone())),
                 alert_rules: Arc::new(SqliteAlertRuleRepository::new(pool.clone())),
                 market_data: market_data_provider,
+                yahoo_direct: Arc::new(YahooFinanceProvider::new()),
                 mf_scheme_cache: Arc::new(SqliteMfSchemeCache::new(pool)),
                 mf_data_source: Arc::new(AmfiProvider::new()),
                 app_settings: app_settings_repo,
@@ -1830,6 +1940,9 @@ fn main() {
             get_dashboard_summary,
             list_holdings,
             list_instruments,
+            list_equity_instruments,
+            get_fundamentals,
+            get_stock_news,
             add_instrument,
             backfill_history,
             get_price_history,

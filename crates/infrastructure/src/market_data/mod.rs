@@ -13,6 +13,7 @@
 //! that trade-off is deliberate, not hidden.
 
 pub mod yahoo_finance;
+pub mod yahoo_fundamentals_news;
 pub mod alpha_vantage;
 pub mod amfi;
 pub mod composite;

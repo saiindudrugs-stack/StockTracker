@@ -3,11 +3,13 @@ import type {
   AlertRuleView,
   CandleView,
   DashboardSummary,
+  FundamentalsView,
   HoldingView,
   InstrumentView,
   MarketSnapshotView,
   MfHoldingView,
   MfSchemeSearchResultView,
+  NewsItemView,
   PortfolioAnalysisView,
   PortfolioView,
   PriceHistoryPoint,
@@ -121,4 +123,11 @@ export const api = {
   // doc comment on has_alpha_vantage_key).
   saveAlphaVantageKey: (apiKey: string) => invoke<void>("save_alpha_vantage_key", { apiKey }),
   hasAlphaVantageKey: () => invoke<boolean>("has_alpha_vantage_key"),
+
+  // News & Fundamentals — equities only (no mutual funds). Fundamentals
+  // and news are properties of the company, not any one portfolio, same
+  // reasoning as getMarketSnapshot.
+  listEquityInstruments: () => invoke<InstrumentView[]>("list_equity_instruments"),
+  getFundamentals: (symbol: string) => invoke<FundamentalsView>("get_fundamentals", { symbol }),
+  getStockNews: (symbol: string) => invoke<NewsItemView[]>("get_stock_news", { symbol }),
 };

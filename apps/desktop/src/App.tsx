@@ -9,6 +9,7 @@ import { MutualFundsScreen } from "./screens/MutualFundsScreen";
 import { WatchlistScreen } from "./screens/WatchlistScreen";
 import { AnalysisScreen } from "./screens/AnalysisScreen";
 import { ChartScreen } from "./screens/ChartScreen";
+import { NewsAndFundamentalsScreen } from "./screens/NewsAndFundamentalsScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { api } from "./lib/tauri";
 import type { PortfolioView, ScreenId } from "./lib/types";
@@ -135,6 +136,7 @@ export default function App() {
             {screen === "watchlist" && <WatchlistScreen defaultExchange={selectedMarket.defaultExchange} />}
             {screen === "analysis" && activePortfolioId && <AnalysisScreen portfolioId={activePortfolioId} />}
             {screen === "chart" && <ChartScreen />}
+            {screen === "news" && <NewsAndFundamentalsScreen />}
             {screen === "settings" && <SettingsScreen portfolios={portfolios} onDeletePortfolio={handleDeletePortfolio} />}
           </>
         )}
