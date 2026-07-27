@@ -222,7 +222,21 @@ async fn ensure_instrument_tracked(state: &State<'_, AppState>, symbol: &str, ex
     if symbol.is_empty() {
         return Err("symbol can't be empty".to_string());
     }
-    if let Some(existing) = state.instruments.find_by_symbol(&symbol).await.map_err(|e| e.to_string())? {
+    let requested_exchange = exchange.trim().to_uppercase();
+    if let Some(mut existing) = state.instruments.find_by_symbol(&symbol).await.map_err(|e| e.to_string())? {
+        // A real bug this fixes: previously, an already-registered symbol
+        // was returned as-is no matter what exchange was now being
+        // requested — so switching the country/market selector and
+        // re-adding a ticker silently did nothing if it happened to
+        // already exist (e.g. added once under the wrong market by
+        // mistake). Now the stored exchange is corrected in place when a
+        // different one is explicitly given, updating the SAME
+        // instrument_id — so existing holdings/transactions for it stay
+        // intact, they just start resolving against the right market.
+        if !requested_exchange.is_empty() && existing.exchange != requested_exchange {
+            existing.exchange = requested_exchange;
+            state.instruments.upsert(&existing).await.map_err(|e| e.to_string())?;
+        }
         return Ok(existing);
     }
     let instrument = Instrument {
@@ -230,7 +244,7 @@ async fn ensure_instrument_tracked(state: &State<'_, AppState>, symbol: &str, ex
         isin: Isin::parse(&placeholder_isin(&symbol)).map_err(|e| e.to_string())?,
         symbol: symbol.clone(),
         asset_class: AssetClass::Equity,
-        exchange: exchange.trim().to_uppercase(),
+        exchange: requested_exchange,
         sector: None,
         display_name: None,
     };

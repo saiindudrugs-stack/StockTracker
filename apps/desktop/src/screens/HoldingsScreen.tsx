@@ -566,8 +566,9 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
 
           <h2 style={{ fontSize: 15, marginTop: 28, color: colors.navy }}>Add a new ticker</h2>
           <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 0 }}>
-            Registers the symbol as trackable (NSE, equity, no real ISIN — this slice doesn't
-            validate against an exchange or broker yet). It'll then show up in the Buy/Sell form below.
+            Registers the symbol as trackable under the market selected top-right ({defaultExchange},
+            equity, no real ISIN — this slice doesn't validate against an exchange or broker yet).
+            It'll then show up in the Buy/Sell form below.
           </p>
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 20 }}>
             <input
