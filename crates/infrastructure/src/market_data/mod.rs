@@ -13,7 +13,9 @@
 //! that trade-off is deliberate, not hidden.
 
 pub mod yahoo_finance;
+pub mod alpha_vantage;
 pub mod amfi;
+pub mod composite;
 
 use async_trait::async_trait;
 use pm_domain::analytics::DailyBar;
@@ -46,18 +48,20 @@ pub struct Quote {
 
 #[async_trait]
 pub trait MarketDataProvider: Send + Sync {
-    /// `symbol` here is the *provider's* ticker format (e.g. Yahoo wants
-    /// "RELIANCE.NS" for NSE, "RELIANCE.BO" for BSE) — mapping from the
-    /// app's own Instrument.symbol + exchange to that format is the
-    /// caller's job (see `to_yahoo_symbol` in yahoo_finance.rs), not this
-    /// trait's, so a future second provider isn't forced into Yahoo's
-    /// suffix convention.
-    async fn fetch_quote(&self, symbol: &str) -> Result<Quote, MarketDataError>;
+    /// `symbol` and `exchange` are the app's own raw values (Instrument.
+    /// symbol, Instrument.exchange) — each provider maps these to its own
+    /// ticker format internally (Yahoo wants "RELIANCE.NS", Alpha Vantage
+    /// wants "NSE:RELIANCE" or "RELIANCE.BSE"). This used to be the
+    /// caller's job, with main.rs pre-mapping to Yahoo's format before
+    /// calling — that broke down the moment a second provider needed a
+    /// *different* format for the same instrument, which is exactly what
+    /// adding Alpha Vantage as a fallback requires.
+    async fn fetch_quote(&self, symbol: &str, exchange: &str) -> Result<Quote, MarketDataError>;
 
     /// Up to a year of daily closes + volume, oldest first — the heavier
     /// call, only needed for market-phase classification (SMA-200 needs
     /// 200+ daily bars). Deliberately a separate method from fetch_quote
     /// so callers can choose when to pay for it rather than it being
     /// bundled into every routine price refresh.
-    async fn fetch_daily_history_1y(&self, symbol: &str) -> Result<Vec<DailyBar>, MarketDataError>;
+    async fn fetch_daily_history_1y(&self, symbol: &str, exchange: &str) -> Result<Vec<DailyBar>, MarketDataError>;
 }

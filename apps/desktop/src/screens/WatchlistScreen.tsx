@@ -29,7 +29,7 @@ function fmtNum(v: number | null): string {
   return v == null ? "—" : v.toFixed(2);
 }
 
-export function WatchlistScreen() {
+export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }) {
   const [instruments, setInstruments] = useState<InstrumentView[]>([]);
   const [rows, setRows] = useState<Record<string, Row>>({});
   const [newTicker, setNewTicker] = useState("");
@@ -118,7 +118,7 @@ export function WatchlistScreen() {
     const trimmed = newTicker.trim();
     if (!trimmed) return;
     try {
-      const added = await api.addInstrument(trimmed);
+      const added = await api.addInstrument(trimmed, defaultExchange);
       setNewTicker("");
       await refreshInstruments();
       await refreshSnapshot(added.symbol);

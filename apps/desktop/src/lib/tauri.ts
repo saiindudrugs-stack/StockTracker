@@ -58,7 +58,7 @@ export const api = {
 
   // Instruments and prices are shared reference data, not portfolio-scoped.
   listInstruments: () => invoke<InstrumentView[]>("list_instruments"),
-  addInstrument: (symbol: string) => invoke<InstrumentView>("add_instrument", { symbol }),
+  addInstrument: (symbol: string, exchange?: string) => invoke<InstrumentView>("add_instrument", { symbol, exchange }),
   // Downloads a real year of Yahoo daily history into local storage —
   // needed because a freshly-added ticker (or the two synthetic-seeded
   // demo instruments) otherwise has little to no real chart data.
@@ -115,4 +115,10 @@ export const api = {
       { portfolioId, csvContent }
     ),
   exportMfCsv: (portfolioId: string, siRatePct?: number) => invoke<string>("export_mf_csv", { portfolioId, siRatePct }),
+
+  // Alpha Vantage fallback — only used when Yahoo Finance fails. The key
+  // itself is never sent back to the frontend once saved (see the Rust
+  // doc comment on has_alpha_vantage_key).
+  saveAlphaVantageKey: (apiKey: string) => invoke<void>("save_alpha_vantage_key", { apiKey }),
+  hasAlphaVantageKey: () => invoke<boolean>("has_alpha_vantage_key"),
 };

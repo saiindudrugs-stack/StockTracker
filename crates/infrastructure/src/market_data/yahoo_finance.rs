@@ -49,10 +49,22 @@ impl YahooFinanceProvider {
     /// suffixes; anything else is passed through unsuffixed (won't resolve
     /// correctly for Indian tickers, but avoids silently guessing wrong for
     /// exchanges this function doesn't know about).
+    /// Maps an exchange to the ticker suffix Yahoo Finance expects.
+    /// Verified suffix conventions: NSE/BSE (India) were already in use and
+    /// working here; NYSE/NASDAQ (US) and LSE (UK) follow Yahoo's
+    /// well-documented convention (no suffix for major US exchanges, .L
+    /// for London) — added for the country/market selector, not yet
+    /// exercised live the way NSE/BSE has been in this app.
     pub fn to_yahoo_symbol(symbol: &str, exchange: &str) -> String {
         match exchange.to_uppercase().as_str() {
             "NSE" => format!("{symbol}.NS"),
             "BSE" => format!("{symbol}.BO"),
+            "LSE" => format!("{symbol}.L"),
+            "TSX" => format!("{symbol}.TO"),
+            "ASX" => format!("{symbol}.AX"),
+            "HKEX" => format!("{symbol}.HK"),
+            // NYSE, NASDAQ, and anything else unrecognized: Yahoo uses the
+            // bare ticker with no suffix for major US exchanges.
             _ => symbol.to_string(),
         }
     }
@@ -127,9 +139,10 @@ struct YahooQuoteSeries {
 
 #[async_trait]
 impl MarketDataProvider for YahooFinanceProvider {
-    async fn fetch_quote(&self, symbol: &str) -> Result<Quote, MarketDataError> {
+    async fn fetch_quote(&self, symbol: &str, exchange: &str) -> Result<Quote, MarketDataError> {
+        let yahoo_symbol = Self::to_yahoo_symbol(symbol, exchange);
         let url = format!(
-            "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
+            "https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}?interval=1d&range=1d"
         );
         let response = self
             .http
@@ -140,21 +153,21 @@ impl MarketDataProvider for YahooFinanceProvider {
 
         if !response.status().is_success() {
             return Err(MarketDataError::RequestFailed(format!(
-                "HTTP {} for symbol {symbol} — Yahoo may be rate-limiting or the endpoint has changed",
+                "HTTP {} for symbol {yahoo_symbol} — Yahoo may be rate-limiting or the endpoint has changed",
                 response.status()
             )));
         }
 
         let body: YahooChartResponse = response.json().await.map_err(|e| {
             MarketDataError::UnexpectedResponse(format!(
-                "couldn't parse Yahoo's response for {symbol}: {e}. \
+                "couldn't parse Yahoo's response for {yahoo_symbol}: {e}. \
                  The endpoint's JSON shape may have changed since this client was written — \
                  see the honesty note at the top of yahoo_finance.rs."
             ))
         })?;
 
         if let Some(err) = body.chart.error {
-            return Err(MarketDataError::NoData(format!("{symbol}: {}", err.description)));
+            return Err(MarketDataError::NoData(format!("{yahoo_symbol}: {}", err.description)));
         }
 
         let meta = body
@@ -162,10 +175,10 @@ impl MarketDataProvider for YahooFinanceProvider {
             .result
             .and_then(|r| r.into_iter().next())
             .map(|r| r.meta)
-            .ok_or_else(|| MarketDataError::NoData(symbol.to_string()))?;
+            .ok_or_else(|| MarketDataError::NoData(yahoo_symbol.clone()))?;
 
         let price = Self::f64_to_decimal(meta.regular_market_price)
-            .ok_or_else(|| MarketDataError::UnexpectedResponse(format!("bad price for {symbol}")))?;
+            .ok_or_else(|| MarketDataError::UnexpectedResponse(format!("bad price for {yahoo_symbol}")))?;
 
         Ok(Quote {
             price,
@@ -177,9 +190,10 @@ impl MarketDataProvider for YahooFinanceProvider {
         })
     }
 
-    async fn fetch_daily_history_1y(&self, symbol: &str) -> Result<Vec<DailyBar>, MarketDataError> {
+    async fn fetch_daily_history_1y(&self, symbol: &str, exchange: &str) -> Result<Vec<DailyBar>, MarketDataError> {
+        let yahoo_symbol = Self::to_yahoo_symbol(symbol, exchange);
         let url = format!(
-            "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1y"
+            "https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}?interval=1d&range=1y"
         );
         let response = self
             .http
@@ -190,34 +204,34 @@ impl MarketDataProvider for YahooFinanceProvider {
 
         if !response.status().is_success() {
             return Err(MarketDataError::RequestFailed(format!(
-                "HTTP {} for symbol {symbol} history",
+                "HTTP {} for symbol {yahoo_symbol} history",
                 response.status()
             )));
         }
 
         let body: YahooChartResponse = response.json().await.map_err(|e| {
             MarketDataError::UnexpectedResponse(format!(
-                "couldn't parse Yahoo's 1y history response for {symbol}: {e}"
+                "couldn't parse Yahoo's 1y history response for {yahoo_symbol}: {e}"
             ))
         })?;
 
         if let Some(err) = body.chart.error {
-            return Err(MarketDataError::NoData(format!("{symbol}: {}", err.description)));
+            return Err(MarketDataError::NoData(format!("{yahoo_symbol}: {}", err.description)));
         }
 
         let result = body
             .chart
             .result
             .and_then(|r| r.into_iter().next())
-            .ok_or_else(|| MarketDataError::NoData(symbol.to_string()))?;
+            .ok_or_else(|| MarketDataError::NoData(yahoo_symbol.clone()))?;
 
         let timestamps = result.timestamp.ok_or_else(|| {
-            MarketDataError::UnexpectedResponse(format!("no timestamp array for {symbol}"))
+            MarketDataError::UnexpectedResponse(format!("no timestamp array for {yahoo_symbol}"))
         })?;
         let quote_series = result
             .indicators
             .and_then(|i| i.quote.into_iter().next())
-            .ok_or_else(|| MarketDataError::UnexpectedResponse(format!("no quote series for {symbol}")))?;
+            .ok_or_else(|| MarketDataError::UnexpectedResponse(format!("no quote series for {yahoo_symbol}")))?;
 
         let mut bars = Vec::with_capacity(timestamps.len());
         for i in 0..timestamps.len() {
@@ -235,7 +249,7 @@ impl MarketDataProvider for YahooFinanceProvider {
                 continue;
             };
             let date = DateTime::from_timestamp(timestamps[i], 0)
-                .ok_or_else(|| MarketDataError::UnexpectedResponse(format!("bad timestamp for {symbol}")))?
+                .ok_or_else(|| MarketDataError::UnexpectedResponse(format!("bad timestamp for {yahoo_symbol}")))?
                 .date_naive();
             bars.push(DailyBar { date, open, high, low, close, volume });
         }
@@ -257,6 +271,15 @@ mod tests {
     #[test]
     fn unknown_exchange_passes_through_unsuffixed_rather_than_guessing() {
         assert_eq!(YahooFinanceProvider::to_yahoo_symbol("AAPL", "NASDAQ"), "AAPL");
+        assert_eq!(YahooFinanceProvider::to_yahoo_symbol("AAPL", "NYSE"), "AAPL");
+    }
+
+    #[test]
+    fn maps_additional_market_suffixes_correctly() {
+        assert_eq!(YahooFinanceProvider::to_yahoo_symbol("VOD", "LSE"), "VOD.L");
+        assert_eq!(YahooFinanceProvider::to_yahoo_symbol("SHOP", "TSX"), "SHOP.TO");
+        assert_eq!(YahooFinanceProvider::to_yahoo_symbol("BHP", "ASX"), "BHP.AX");
+        assert_eq!(YahooFinanceProvider::to_yahoo_symbol("0700", "HKEX"), "0700.HK");
     }
 
     /// Parses a hand-written JSON string shaped like Yahoo's documented

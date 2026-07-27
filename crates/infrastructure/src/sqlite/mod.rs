@@ -12,6 +12,7 @@ use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 
 pub mod alert_rule_repository;
+pub mod app_settings;
 pub mod holding_repository;
 pub mod instrument_repository;
 pub mod mf_scheme_cache;
@@ -20,6 +21,7 @@ pub mod price_repository;
 pub mod transaction_repository;
 
 pub use alert_rule_repository::SqliteAlertRuleRepository;
+pub use app_settings::SqliteAppSettings;
 pub use holding_repository::SqliteHoldingRepository;
 pub use instrument_repository::SqliteInstrumentRepository;
 pub use mf_scheme_cache::SqliteMfSchemeCache;
@@ -207,4 +209,13 @@ CREATE TABLE IF NOT EXISTS mf_scheme_cache (
     nav_date TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mf_scheme_cache_name ON mf_scheme_cache(scheme_name);
+
+-- Local-only config, never synced anywhere (not GitHub, not any sync
+-- feature) — currently just the optional Alpha Vantage fallback API key.
+-- A generic key-value table rather than a dedicated column so a future
+-- second setting doesn't need its own migration.
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;

@@ -17,7 +17,7 @@ function parseNumeric(s: string | null): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
+export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: string; defaultExchange: string }) {
   const [tab, setTab] = useState<Tab>("long_term");
   const [holdings, setHoldings] = useState<HoldingView[]>([]);
   const [siRatePct, setSiRatePct] = useState("9.5");
@@ -132,7 +132,7 @@ export function HoldingsScreen({ portfolioId }: { portfolioId: string }) {
     const trimmed = newTicker.trim();
     if (!trimmed) return;
     try {
-      const added = await api.addInstrument(trimmed);
+      const added = await api.addInstrument(trimmed, defaultExchange);
       setNewTicker("");
       await refreshInstruments();
       setSymbol(added.symbol);

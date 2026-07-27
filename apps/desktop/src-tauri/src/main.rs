@@ -23,13 +23,15 @@ use pm_domain::repositories::{
 };
 use pm_domain::value_objects::{Currency, Isin, Money};
 use pm_infrastructure::market_data::{
+    alpha_vantage::{AlphaVantageProvider, ALPHA_VANTAGE_API_KEY_SETTING},
     amfi::{AmfiProvider, MutualFundDataSource},
+    composite::CompositeMarketDataProvider,
     yahoo_finance::YahooFinanceProvider,
     MarketDataProvider,
 };
 use pm_infrastructure::sqlite::{
-    SqliteAlertRuleRepository, SqliteHoldingRepository, SqliteInstrumentRepository, SqliteMfSchemeCache,
-    SqlitePool, SqlitePortfolioRepository, SqlitePriceRepository, SqliteTransactionRepository,
+    SqliteAlertRuleRepository, SqliteAppSettings, SqliteHoldingRepository, SqliteInstrumentRepository,
+    SqliteMfSchemeCache, SqlitePool, SqlitePortfolioRepository, SqlitePriceRepository, SqliteTransactionRepository,
 };
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -47,9 +49,10 @@ struct AppState {
     instruments: Arc<SqliteInstrumentRepository>,
     prices: Arc<SqlitePriceRepository>,
     alert_rules: Arc<SqliteAlertRuleRepository>,
-    market_data: Arc<YahooFinanceProvider>,
+    market_data: Arc<CompositeMarketDataProvider<YahooFinanceProvider, AlphaVantageProvider>>,
     mf_scheme_cache: Arc<SqliteMfSchemeCache>,
     mf_data_source: Arc<AmfiProvider>,
+    app_settings: Arc<SqliteAppSettings>,
 }
 
 #[derive(Serialize)]
@@ -236,8 +239,11 @@ async fn ensure_instrument_tracked(state: &State<'_, AppState>, symbol: &str, ex
 }
 
 #[tauri::command]
-async fn add_instrument(state: State<'_, AppState>, symbol: String) -> Result<InstrumentView, String> {
-    let instrument = ensure_instrument_tracked(&state, &symbol, "NSE").await?;
+async fn add_instrument(state: State<'_, AppState>, symbol: String, exchange: Option<String>) -> Result<InstrumentView, String> {
+    // Defaults to NSE when the frontend doesn't pass one — keeps existing
+    // callers working unchanged. The country/market selector passes the
+    // selected market's exchange explicitly.
+    let instrument = ensure_instrument_tracked(&state, &symbol, exchange.as_deref().unwrap_or("NSE")).await?;
     Ok(InstrumentView { symbol: instrument.symbol, sector: instrument.sector })
 }
 
@@ -269,10 +275,9 @@ struct BackfillResult {
 /// -47% for RELIANCE that doesn't reflect anything that actually happened
 /// in the market).
 async fn backfill_instrument_history(state: &AppState, instrument: &Instrument) -> Result<usize, String> {
-    let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
     let bars = state
         .market_data
-        .fetch_daily_history_1y(&yahoo_symbol)
+        .fetch_daily_history_1y(&instrument.symbol, &instrument.exchange)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -451,8 +456,7 @@ async fn import_holdings_csv(state: State<'_, AppState>, portfolio_id: String, c
                     // (rate limit, an unrecognized symbol on Yahoo's side)
                     // does NOT fail the import itself — the holding is still
                     // real and correct even if its chart is empty for now.
-                    let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
-                    if let Ok(bars) = state.market_data.fetch_daily_history_1y(&yahoo_symbol).await {
+                    if let Ok(bars) = state.market_data.fetch_daily_history_1y(&instrument.symbol, &instrument.exchange).await {
                         for bar in &bars {
                             let ohlc = pm_domain::repositories::OhlcBar {
                                 date: bar.date,
@@ -736,9 +740,8 @@ async fn refresh_prices(state: State<'_, AppState>, portfolio_id: String) -> Res
                 continue;
             }
         };
-        let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
 
-        match state.market_data.fetch_quote(&yahoo_symbol).await {
+        match state.market_data.fetch_quote(&instrument.symbol, &instrument.exchange).await {
             Ok(quote) => {
                 if let Err(e) = state.prices.upsert_daily_bar(h.instrument_id, today, quote.price).await {
                     failed.push(RefreshFailure { symbol: instrument.symbol, reason: e.to_string() });
@@ -803,8 +806,7 @@ async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Resu
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
-    let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
-    let quote = state.market_data.fetch_quote(&yahoo_symbol).await.map_err(|e| e.to_string())?;
+    let quote = state.market_data.fetch_quote(&instrument.symbol, &instrument.exchange).await.map_err(|e| e.to_string())?;
     let previous_close = find_previous_close(&state, instrument.id).await?;
     let day_change_pct = previous_close.and_then(|prev| {
         if prev.is_zero() {
@@ -867,10 +869,9 @@ async fn analyze_market_phase(state: State<'_, AppState>, symbol: String) -> Res
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
-    let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
     let bars = state
         .market_data
-        .fetch_daily_history_1y(&yahoo_symbol)
+        .fetch_daily_history_1y(&instrument.symbol, &instrument.exchange)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -990,8 +991,7 @@ async fn get_portfolio_analysis(state: State<'_, AppState>, portfolio_id: String
                 continue;
             }
         };
-        let yahoo_symbol = YahooFinanceProvider::to_yahoo_symbol(&instrument.symbol, &instrument.exchange);
-        match state.market_data.fetch_daily_history_1y(&yahoo_symbol).await {
+        match state.market_data.fetch_daily_history_1y(&instrument.symbol, &instrument.exchange).await {
             Ok(bars) => {
                 let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
                 let returns = pm_domain::analytics::daily_returns(&closes);
@@ -1052,6 +1052,33 @@ async fn get_portfolio_analysis(state: State<'_, AppState>, portfolio_id: String
 #[tauri::command]
 async fn reset_all_data(state: State<'_, AppState>) -> Result<(), String> {
     state.pool.reset_all().await.map_err(|e| e.to_string())
+}
+
+/// Saves the Alpha Vantage fallback API key to local settings storage —
+/// never committed to GitHub, never synced anywhere. Takes effect
+/// immediately, no restart needed, since AlphaVantageProvider reads this
+/// setting fresh on every call rather than caching it at startup.
+#[tauri::command]
+async fn save_alpha_vantage_key(state: State<'_, AppState>, api_key: String) -> Result<(), String> {
+    state
+        .app_settings
+        .set(ALPHA_VANTAGE_API_KEY_SETTING, api_key.trim())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Returns whether a key is currently saved — deliberately does NOT return
+/// the key itself back to the frontend once saved, so it isn't sitting in
+/// the webview's JS state/memory longer than the one moment it's typed in.
+#[tauri::command]
+async fn has_alpha_vantage_key(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state
+        .app_settings
+        .get(ALPHA_VANTAGE_API_KEY_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false))
 }
 
 #[derive(Serialize)]
@@ -1756,6 +1783,12 @@ fn main() {
             // SQLite, not yet SQLCipher — flagged, not hidden.
             let pool = SqlitePool::open(db_path.to_str().unwrap()).expect("failed to open local database");
 
+            let app_settings_repo = Arc::new(SqliteAppSettings::new(pool.clone()));
+            let market_data_provider = Arc::new(CompositeMarketDataProvider::new(
+                YahooFinanceProvider::new(),
+                Some(AlphaVantageProvider::new(app_settings_repo.clone())),
+            ));
+
             let state = AppState {
                 pool: pool.clone(),
                 portfolios: Arc::new(SqlitePortfolioRepository::new(pool.clone())),
@@ -1764,9 +1797,10 @@ fn main() {
                 instruments: Arc::new(SqliteInstrumentRepository::new(pool.clone())),
                 prices: Arc::new(SqlitePriceRepository::new(pool.clone())),
                 alert_rules: Arc::new(SqliteAlertRuleRepository::new(pool.clone())),
-                market_data: Arc::new(YahooFinanceProvider::new()),
+                market_data: market_data_provider,
                 mf_scheme_cache: Arc::new(SqliteMfSchemeCache::new(pool)),
                 mf_data_source: Arc::new(AmfiProvider::new()),
+                app_settings: app_settings_repo,
             };
 
             tauri::async_runtime::block_on(seed_demo_data_if_first_launch(&state))
@@ -1802,6 +1836,8 @@ fn main() {
             get_ohlc_history,
             compute_portfolio_xirr,
             reset_all_data,
+            save_alpha_vantage_key,
+            has_alpha_vantage_key,
             refresh_mf_scheme_cache,
             search_mf_schemes,
             add_mutual_fund,
