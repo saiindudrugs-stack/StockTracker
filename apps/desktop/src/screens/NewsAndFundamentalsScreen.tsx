@@ -7,7 +7,9 @@ export function NewsAndFundamentalsScreen() {
   const [instruments, setInstruments] = useState<InstrumentView[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [fundamentals, setFundamentals] = useState<FundamentalsView | null>(null);
+  const [fundamentalsError, setFundamentalsError] = useState<string | null>(null);
   const [news, setNews] = useState<NewsItemView[]>([]);
+  const [newsError, setNewsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,15 +27,26 @@ export function NewsAndFundamentalsScreen() {
   useEffect(() => {
     if (!selected) return;
     setLoading(true);
-    setError(null);
     setFundamentals(null);
+    setFundamentalsError(null);
     setNews([]);
-    Promise.all([api.getFundamentals(selected), api.getStockNews(selected)])
-      .then(([f, n]) => {
-        setFundamentals(f);
-        setNews(n);
-      })
-      .catch((e) => setError(String(e)))
+    setNewsError(null);
+
+    // Deliberately two independent calls, not Promise.all — fundamentals
+    // and news come from different Yahoo endpoints with different
+    // reliability (quoteSummary has been unreliable in practice; the
+    // search/news endpoint has not), and Promise.all fails the whole pane
+    // the moment either one does. News showing up shouldn't depend on
+    // fundamentals succeeding, or vice versa.
+    api
+      .getFundamentals(selected)
+      .then(setFundamentals)
+      .catch((e) => setFundamentalsError(String(e)));
+
+    api
+      .getStockNews(selected)
+      .then(setNews)
+      .catch((e) => setNewsError(String(e)))
       .finally(() => setLoading(false));
   }, [selected]);
 
@@ -69,65 +82,76 @@ export function NewsAndFundamentalsScreen() {
         {error && <p style={{ color: colors.danger }}>{error}</p>}
         {loading && <p style={{ fontSize: 12, color: colors.textMuted }}>Loading…</p>}
 
-        {!loading && fundamentals && selected && (
+        {!loading && selected && (
           <>
             <p style={{ fontSize: 16, fontWeight: 500, margin: "0 0 2px" }}>{selected}</p>
             <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 12px" }}>
-              {[fundamentals.sector, fundamentals.industry].filter(Boolean).join(" · ") || "Sector/industry unavailable"}
+              {fundamentals ? [fundamentals.sector, fundamentals.industry].filter(Boolean).join(" · ") || "Sector/industry unavailable" : ""}
             </p>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 16 }}>
-              <div style={{ ...panelStyle, padding: 10 }}>
-                <div style={{ fontSize: 10, color: colors.textMuted }}>Market cap</div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{fmtMoney(fundamentals.market_cap)}</div>
-              </div>
-              <div style={{ ...panelStyle, padding: 10 }}>
-                <div style={{ fontSize: 10, color: colors.textMuted }}>P/E</div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{fundamentals.pe_ratio ? parseFloat(fundamentals.pe_ratio).toFixed(2) : "—"}</div>
-              </div>
-              <div style={{ ...panelStyle, padding: 10 }}>
-                <div style={{ fontSize: 10, color: colors.textMuted }}>52W range</div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>
-                  {fundamentals.week52_low ? parseFloat(fundamentals.week52_low).toFixed(0) : "—"}–
-                  {fundamentals.week52_high ? parseFloat(fundamentals.week52_high).toFixed(0) : "—"}
+            {fundamentals ? (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 16 }}>
+                  <div style={{ ...panelStyle, padding: 10 }}>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>Market cap</div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{fmtMoney(fundamentals.market_cap)}</div>
+                  </div>
+                  <div style={{ ...panelStyle, padding: 10 }}>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>P/E</div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{fundamentals.pe_ratio ? parseFloat(fundamentals.pe_ratio).toFixed(2) : "—"}</div>
+                  </div>
+                  <div style={{ ...panelStyle, padding: 10 }}>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>52W range</div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>
+                      {fundamentals.week52_low ? parseFloat(fundamentals.week52_low).toFixed(0) : "—"}–
+                      {fundamentals.week52_high ? parseFloat(fundamentals.week52_high).toFixed(0) : "—"}
+                    </div>
+                  </div>
+                  <div style={{ ...panelStyle, padding: 10 }}>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>Div yield</div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>
+                      {fundamentals.dividend_yield ? `${(parseFloat(fundamentals.dividend_yield) * 100).toFixed(2)}%` : "—"}
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div style={{ ...panelStyle, padding: 10 }}>
-                <div style={{ fontSize: 10, color: colors.textMuted }}>Div yield</div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>
-                  {fundamentals.dividend_yield ? `${(parseFloat(fundamentals.dividend_yield) * 100).toFixed(2)}%` : "—"}
-                </div>
-              </div>
-            </div>
 
-            {fundamentals.description && (
-              <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16, lineHeight: 1.5 }}>
-                {fundamentals.description.length > 400 ? `${fundamentals.description.slice(0, 400)}…` : fundamentals.description}
-              </p>
-            )}
+                {fundamentals.description && (
+                  <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16, lineHeight: 1.5 }}>
+                    {fundamentals.description.length > 400 ? `${fundamentals.description.slice(0, 400)}…` : fundamentals.description}
+                  </p>
+                )}
 
-            <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 8px" }}>Revenue by period</p>
-            {fundamentals.revenue_by_period.length === 0 ? (
-              <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16 }}>Not available for this symbol.</p>
+                <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 8px" }}>Revenue by period</p>
+                {fundamentals.revenue_by_period.length === 0 ? (
+                  <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16 }}>Not available for this symbol.</p>
+                ) : (
+                  <table style={{ borderCollapse: "collapse", fontSize: 12, marginBottom: 20 }}>
+                    <thead>
+                      <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
+                        <th style={{ padding: "4px 12px 4px 0" }}>Period end</th>
+                        <th style={{ padding: "4px 12px" }}>Revenue</th>
+                        <th style={{ padding: "4px 12px" }}>Net income</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fundamentals.revenue_by_period.map((p) => (
+                        <tr key={p.period_end}>
+                          <td style={{ padding: "4px 12px 4px 0" }}>{p.period_end || "—"}</td>
+                          <td style={{ padding: "4px 12px" }}>{fmtMoney(p.revenue)}</td>
+                          <td style={{ padding: "4px 12px" }}>{p.net_income ? fmtMoney(p.net_income) : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </>
             ) : (
-              <table style={{ borderCollapse: "collapse", fontSize: 12, marginBottom: 20 }}>
-                <thead>
-                  <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
-                    <th style={{ padding: "4px 12px 4px 0" }}>Period end</th>
-                    <th style={{ padding: "4px 12px" }}>Revenue</th>
-                    <th style={{ padding: "4px 12px" }}>Net income</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {fundamentals.revenue_by_period.map((p) => (
-                    <tr key={p.period_end}>
-                      <td style={{ padding: "4px 12px 4px 0" }}>{p.period_end || "—"}</td>
-                      <td style={{ padding: "4px 12px" }}>{fmtMoney(p.revenue)}</td>
-                      <td style={{ padding: "4px 12px" }}>{p.net_income ? fmtMoney(p.net_income) : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16 }}>
+                Fundamentals aren't available right now for this symbol — Yahoo's fundamentals endpoint has been
+                unreliable in practice (see Settings for the underlying reason). News below is fetched
+                independently and isn't affected by this.
+                {fundamentalsError && <span style={{ display: "block", marginTop: 4, opacity: 0.7 }}>{fundamentalsError}</span>}
+              </p>
             )}
 
             <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 8px" }}>News and highlights (top 5)</p>
@@ -136,7 +160,9 @@ export function NewsAndFundamentalsScreen() {
               filings, dividends) — not a verified separate filings feed. Treat it as a helpful sort, not a
               guarantee every real filing is caught.
             </p>
-            {news.length === 0 ? (
+            {newsError ? (
+              <p style={{ fontSize: 12, color: colors.danger }}>Couldn't load news: {newsError}</p>
+            ) : news.length === 0 ? (
               <p style={{ fontSize: 12, color: colors.textMuted }}>No news found for this symbol.</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

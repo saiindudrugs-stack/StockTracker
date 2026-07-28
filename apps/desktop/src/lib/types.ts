@@ -17,9 +17,19 @@ export interface DashboardSummary {
   holdings_missing_price: number;
 }
 
+export interface MarketSummaryView {
+  country: string;
+  currency_symbol: string;
+  net_worth: string;
+  unrealized_pnl: string;
+  realized_pnl: string;
+  holding_count: number;
+}
+
 export interface HoldingView {
   symbol: string;
   sector: string | null;
+  exchange: string;
   quantity: string;
   avg_cost: string;
   last_price: string | null;
@@ -43,6 +53,7 @@ export interface HoldingView {
 export interface InstrumentView {
   symbol: string;
   sector: string | null;
+  exchange: string;
 }
 
 export interface PriceHistoryPoint {
@@ -71,6 +82,7 @@ export interface RefreshPricesResult {
 
 export interface MarketSnapshotView {
   symbol: string;
+  exchange: string;
   price: string;
   previous_close: string | null;
   day_high: string | null;

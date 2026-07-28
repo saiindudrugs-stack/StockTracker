@@ -7,6 +7,7 @@ import type {
   HoldingView,
   InstrumentView,
   MarketSnapshotView,
+  MarketSummaryView,
   MfHoldingView,
   MfSchemeSearchResultView,
   NewsItemView,
@@ -32,6 +33,8 @@ export const api = {
 
   getDashboardSummary: (portfolioId: string) =>
     invoke<DashboardSummary>("get_dashboard_summary", { portfolioId }),
+  getDashboardByMarket: (portfolioId: string) =>
+    invoke<MarketSummaryView[]>("get_dashboard_by_market", { portfolioId }),
   listHoldings: (portfolioId: string, siRatePct?: number) =>
     invoke<HoldingView[]>("list_holdings", { portfolioId, siRatePct }),
   recordBuy: (portfolioId: string, symbol: string, quantity: string, price: string) =>

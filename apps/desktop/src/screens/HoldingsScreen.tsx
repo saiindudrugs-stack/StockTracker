@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { api } from "../lib/tauri";
 import type { HoldingView, InstrumentView } from "../lib/types";
-import { colors, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell } from "../lib/theme";
+import { colors, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, currencySymbolForExchange } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 import { AlertSetter } from "../components/AlertSetter";
 
@@ -456,9 +456,9 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
                   >
                     <td style={{ padding: "6px 8px 6px 0", fontWeight: flash ? 700 : 400 }}>{h.symbol}</td>
                     <td>{h.quantity}</td>
-                    <td>{fmtMoney(h.avg_cost)}</td>
-                    <td>{fmtMoney(h.previous_close)}</td>
-                    <td>{fmtMoney(h.last_price)}</td>
+                    <td>{`${currencySymbolForExchange(h.exchange)}${fmtMoney(h.avg_cost)}`}</td>
+                    <td>{`${currencySymbolForExchange(h.exchange)}${fmtMoney(h.previous_close)}`}</td>
+                    <td>{`${currencySymbolForExchange(h.exchange)}${fmtMoney(h.last_price)}`}</td>
                     <td style={{ color: h.day_change_pct != null ? pnlColor(h.day_change_pct) : colors.textMuted, fontWeight: 600 }}>
                       {h.day_change_pct != null ? `${(h.day_change_pct * 100).toFixed(2)}%` : "—"}
                     </td>
@@ -468,12 +468,12 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
                         fontWeight: 600,
                       }}
                     >
-                      {fmtMoney(h.day_gain_loss)}
+                      {`${currencySymbolForExchange(h.exchange)}${fmtMoney(h.day_gain_loss)}`}
                     </td>
                     <td>{volumeBySymbol[h.symbol] != null ? volumeBySymbol[h.symbol].toLocaleString() : "—"}</td>
-                    <td>{fmtMoney(h.market_value)}</td>
+                    <td>{`${currencySymbolForExchange(h.exchange)}${fmtMoney(h.market_value)}`}</td>
                     <td style={{ color: h.unrealized_pnl != null ? pnlColor(pnl) : colors.textMuted, fontWeight: 500 }}>
-                      {fmtMoney(h.unrealized_pnl)}
+                      {`${currencySymbolForExchange(h.exchange)}${fmtMoney(h.unrealized_pnl)}`}
                     </td>
                     <td style={{ color: h.cagr_pct != null ? pnlColor(h.cagr_pct) : colors.textMuted, fontWeight: 600 }}>
                       {h.cagr_pct != null ? `${h.cagr_pct.toFixed(2)}%` : "—"}
@@ -481,10 +481,10 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
                     <td style={{ fontSize: 11 }}>
                       {siValue != null && beatingSi != null ? (
                         <>
-                          <div style={{ color: colors.textMuted }}>SI: {fmtMoney(siValue)}</div>
+                          <div style={{ color: colors.textMuted }}>SI: {currencySymbolForExchange(h.exchange)}{fmtMoney(siValue)}</div>
                           <div style={{ color: pnlColor(beatingSi), fontWeight: 600 }}>
                             {beatingSi >= 0 ? "Beating by " : "Behind by "}
-                            {fmtMoney(Math.abs(beatingSi))}
+                            {currencySymbolForExchange(h.exchange)}{fmtMoney(Math.abs(beatingSi))}
                           </div>
                         </>
                       ) : (

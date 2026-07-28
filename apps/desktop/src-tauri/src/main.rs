@@ -73,6 +73,12 @@ struct PortfolioView {
 struct HoldingView {
     symbol: String,
     sector: Option<String>,
+    /// Which market this instrument trades on (NSE/BSE/NASDAQ/NYSE/LSE/…)
+    /// — the frontend uses this to show the right currency symbol per row,
+    /// since a single portfolio can now hold instruments from multiple
+    /// countries (the market/country selector added later than the
+    /// original single-market design).
+    exchange: String,
     quantity: String,
     avg_cost: String,
     last_price: Option<String>,
@@ -110,6 +116,7 @@ struct HoldingView {
 struct InstrumentView {
     symbol: String,
     sector: Option<String>,
+    exchange: String,
 }
 
 #[derive(Serialize)]
@@ -145,6 +152,23 @@ fn placeholder_isin(symbol: &str) -> String {
 /// paisa, whatever produced the extra digits upstream.
 fn round_price(v: f64) -> Decimal {
     Decimal::from_str(&v.to_string()).unwrap_or(Decimal::ZERO).round_dp(2)
+}
+
+/// Groups an exchange into the country label used for the Dashboard's
+/// per-market summary — matches the same three markets the country
+/// selector (MARKETS in CountrySelector.tsx) offers, plus a few extra
+/// exchanges the Yahoo suffix mapping already understands, so a holding
+/// never silently falls into an unlabeled bucket.
+fn country_label_for_exchange(exchange: &str) -> &'static str {
+    match exchange.to_uppercase().as_str() {
+        "NSE" | "BSE" | "AMFI" => "India",
+        "NASDAQ" | "NYSE" => "United States",
+        "LSE" => "United Kingdom",
+        "TSX" => "Canada",
+        "ASX" => "Australia",
+        "HKEX" => "Hong Kong",
+        _ => "Other",
+    }
 }
 
 /// "Today" per NSE/BSE's own clock (IST, UTC+5:30), not the server's UTC
@@ -214,7 +238,7 @@ async fn delete_portfolio(state: State<'_, AppState>, portfolio_id: String) -> R
 #[tauri::command]
 async fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentView>, String> {
     let all = state.instruments.list_all().await.map_err(|e| e.to_string())?;
-    Ok(all.into_iter().map(|i| InstrumentView { symbol: i.symbol, sector: i.sector }).collect())
+    Ok(all.into_iter().map(|i| InstrumentView { symbol: i.symbol, sector: i.sector, exchange: i.exchange }).collect())
 }
 
 /// Equities only (no mutual funds) — the left-pane ticker list on the News
@@ -223,7 +247,7 @@ async fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentVi
 #[tauri::command]
 async fn list_equity_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentView>, String> {
     let equities = state.instruments.list_by_asset_class(AssetClass::Equity).await.map_err(|e| e.to_string())?;
-    Ok(equities.into_iter().map(|i| InstrumentView { symbol: i.symbol, sector: i.sector }).collect())
+    Ok(equities.into_iter().map(|i| InstrumentView { symbol: i.symbol, sector: i.sector, exchange: i.exchange }).collect())
 }
 
 #[derive(Serialize)]
@@ -367,7 +391,7 @@ async fn add_instrument(state: State<'_, AppState>, symbol: String, exchange: Op
     // callers working unchanged. The country/market selector passes the
     // selected market's exchange explicitly.
     let instrument = ensure_instrument_tracked(&state, &symbol, exchange.as_deref().unwrap_or("NSE")).await?;
-    Ok(InstrumentView { symbol: instrument.symbol, sector: instrument.sector })
+    Ok(InstrumentView { symbol: instrument.symbol, sector: instrument.sector, exchange: instrument.exchange })
 }
 
 #[derive(Serialize)]
@@ -698,6 +722,76 @@ async fn get_dashboard_summary(state: State<'_, AppState>, portfolio_id: String)
     use_case.execute(portfolio_id).await.map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+struct MarketSummaryView {
+    country: String,
+    currency_symbol: String,
+    net_worth: String,
+    unrealized_pnl: String,
+    realized_pnl: String,
+    holding_count: usize,
+}
+
+/// Per-country breakdown, not a currency-converted blend — see the doc
+/// comment on why: get_dashboard_summary's single "net worth" figure sums
+/// every holding's raw numeric value regardless of currency the moment a
+/// portfolio holds instruments from more than one market, which is
+/// mathematically meaningless (adding rupees and dollars as if they were
+/// the same unit) without an FX conversion this app doesn't do. Each
+/// country group here stays internally consistent in its own currency
+/// instead — real numbers you can trust, rather than one blended number
+/// that looks precise but isn't meaningful.
+#[tauri::command]
+async fn get_dashboard_by_market(state: State<'_, AppState>, portfolio_id: String) -> Result<Vec<MarketSummaryView>, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let holdings = state.holdings.list_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())?;
+
+    // country -> (net_worth, unrealized_pnl, realized_pnl, holding_count, currency_symbol)
+    let mut groups: std::collections::HashMap<&'static str, (Decimal, Decimal, Decimal, usize, &'static str)> =
+        std::collections::HashMap::new();
+
+    for h in &holdings {
+        let instrument = state.instruments.get(h.instrument_id).await.map_err(|e| e.to_string())?;
+        // Mutual funds live on their own screen with their own currency
+        // story (always India/AMFI today) — excluded here the same way
+        // list_holdings excludes them from the equity Holdings table.
+        if instrument.asset_class == AssetClass::MutualFund {
+            continue;
+        }
+        let country = country_label_for_exchange(&instrument.exchange);
+        let currency = match country {
+            "India" => "₹",
+            "United States" => "$",
+            "United Kingdom" => "£",
+            "Canada" => "C$",
+            "Australia" => "A$",
+            "Hong Kong" => "HK$",
+            _ => "",
+        };
+        let entry = groups.entry(country).or_insert((Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, 0, currency));
+        entry.2 += h.realized_pnl;
+        entry.3 += 1;
+        if let Ok(Some(ltp)) = state.prices.latest_price(h.instrument_id).await {
+            entry.0 += h.market_value(ltp);
+            entry.1 += h.unrealized_pnl(ltp);
+        }
+    }
+
+    let mut views: Vec<MarketSummaryView> = groups
+        .into_iter()
+        .map(|(country, (net_worth, unrealized, realized, count, currency))| MarketSummaryView {
+            country: country.to_string(),
+            currency_symbol: currency.to_string(),
+            net_worth: net_worth.to_string(),
+            unrealized_pnl: unrealized.to_string(),
+            realized_pnl: realized.to_string(),
+            holding_count: count,
+        })
+        .collect();
+    views.sort_by(|a, b| a.country.cmp(&b.country));
+    Ok(views)
+}
+
 struct HoldingMetrics {
     ltp: Option<Decimal>,
     previous_close: Option<Decimal>,
@@ -807,6 +901,7 @@ async fn list_holdings(state: State<'_, AppState>, portfolio_id: String, si_rate
         views.push(HoldingView {
             symbol: instrument.symbol,
             sector: instrument.sector,
+            exchange: instrument.exchange,
             quantity: h.quantity.to_string(),
             avg_cost: h.avg_cost.to_string(),
             last_price: m.ltp.map(|p| p.to_string()),
@@ -907,6 +1002,10 @@ async fn find_previous_close(
 #[derive(Serialize)]
 struct MarketSnapshotView {
     symbol: String,
+    /// Same reasoning as HoldingView.exchange — lets the frontend show the
+    /// right currency symbol per row now that Watchlist can hold tickers
+    /// from multiple countries.
+    exchange: String,
     price: String,
     previous_close: Option<String>,
     day_high: Option<String>,
@@ -942,6 +1041,7 @@ async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Resu
 
     Ok(MarketSnapshotView {
         symbol: instrument.symbol,
+        exchange: instrument.exchange,
         price: quote.price.to_string(),
         previous_close: previous_close.map(|p| p.to_string()),
         day_high: quote.day_high.map(|d| d.to_string()),
@@ -1397,7 +1497,7 @@ async fn search_mf_schemes(state: State<'_, AppState>, query: String) -> Result<
 #[tauri::command]
 async fn add_mutual_fund(state: State<'_, AppState>, scheme_code: String) -> Result<InstrumentView, String> {
     if let Some(existing) = state.instruments.find_by_symbol(&scheme_code).await.map_err(|e| e.to_string())? {
-        return Ok(InstrumentView { symbol: existing.symbol, sector: existing.sector });
+        return Ok(InstrumentView { symbol: existing.symbol, sector: existing.sector, exchange: existing.exchange });
     }
     let scheme = state
         .mf_scheme_cache
@@ -1427,7 +1527,7 @@ async fn add_mutual_fund(state: State<'_, AppState>, scheme_code: String) -> Res
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(InstrumentView { symbol: instrument.symbol, sector: instrument.sector })
+    Ok(InstrumentView { symbol: instrument.symbol, sector: instrument.sector, exchange: instrument.exchange })
 }
 
 #[derive(Serialize)]
@@ -1938,6 +2038,7 @@ fn main() {
             create_portfolio,
             delete_portfolio,
             get_dashboard_summary,
+            get_dashboard_by_market,
             list_holdings,
             list_instruments,
             list_equity_instruments,

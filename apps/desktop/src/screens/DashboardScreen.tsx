@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/tauri";
-import type { AlertRuleView, DashboardSummary, HoldingView } from "../lib/types";
-import { cardStyle, colors, panelStyle } from "../lib/theme";
+import type { AlertRuleView, DashboardSummary, HoldingView, MarketSummaryView } from "../lib/types";
+import { cardStyle, colors, panelStyle, pnlColor, fmtMoney } from "../lib/theme";
 
 // A few distinct, low-saturation colors for the sector breakdown bars —
 // enough for a handful of sectors; this is demo-scale data (2 instruments),
@@ -15,6 +15,7 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
   const [xirrError, setXirrError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [alertRules, setAlertRules] = useState<AlertRuleView[]>([]);
+  const [marketSummaries, setMarketSummaries] = useState<MarketSummaryView[]>([]);
 
   function refreshAlerts() {
     api
@@ -40,6 +41,14 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
       })
       .catch((e) => setError(String(e)));
     refreshAlerts();
+
+    // Independent from the Promise.all above on purpose — this is a
+    // supplementary breakdown, not something the rest of the dashboard
+    // should fail alongside if it errors.
+    api
+      .getDashboardByMarket(portfolioId)
+      .then(setMarketSummaries)
+      .catch(() => setMarketSummaries([]));
 
     // Kept separate from the Promise.all above: XIRR can legitimately fail
     // to compute (e.g. no priced holdings, or fewer than one inflow/outflow
@@ -182,6 +191,57 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
           </p>
         </div>
       </div>
+
+      {marketSummaries.length > 0 && (
+        <div style={{ ...panelStyle, marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 4px", fontWeight: 600 }}>
+            By market
+          </p>
+          <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 10px" }}>
+            Shown separately per country rather than blended into one number — this portfolio may hold
+            instruments priced in different currencies, and summing rupees and dollars together as if
+            they were the same unit would be misleading rather than precise. No currency conversion
+            happens here.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${marketSummaries.length}, 1fr)`, gap: 10 }}>
+            {marketSummaries.map((m) => {
+              const unrealized = parseFloat(m.unrealized_pnl);
+              const realized = parseFloat(m.realized_pnl);
+              return (
+                <div key={m.country} style={{ ...cardStyle, padding: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                    {m.country}{" "}
+                    <span style={{ fontWeight: 400, color: colors.textMuted }}>
+                      ({m.holding_count} holding{m.holding_count === 1 ? "" : "s"})
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11, color: colors.textMuted }}>Net worth</div>
+                  <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>
+                    {m.currency_symbol}
+                    {fmtMoney(m.net_worth)}
+                  </div>
+                  <div style={{ display: "flex", gap: 14 }}>
+                    <div>
+                      <div style={{ fontSize: 10, color: colors.textMuted }}>Unrealized</div>
+                      <div style={{ fontSize: 12, color: pnlColor(unrealized), fontWeight: 500 }}>
+                        {m.currency_symbol}
+                        {fmtMoney(m.unrealized_pnl)}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: colors.textMuted }}>Realized</div>
+                      <div style={{ fontSize: 12, color: pnlColor(realized), fontWeight: 500 }}>
+                        {m.currency_symbol}
+                        {fmtMoney(m.realized_pnl)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
         <div style={panelStyle}>

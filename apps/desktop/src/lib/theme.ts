@@ -82,6 +82,27 @@ export function recommendationColor(rec: string | null): string {
 /// color rule used across P/L, day-change %, and CAGR everywhere in this
 /// app. Was duplicated locally in HoldingsScreen before Watchlist also
 /// needed it; promoted here rather than copy-pasted a second time.
+export function currencySymbolForExchange(exchange: string | null | undefined): string {
+  switch ((exchange ?? "").toUpperCase()) {
+    case "NASDAQ":
+    case "NYSE":
+      return "$";
+    case "LSE":
+      return "£";
+    case "TSX":
+      return "C$";
+    case "ASX":
+      return "A$";
+    case "HKEX":
+      return "HK$";
+    // NSE, BSE, AMFI, and anything unrecognized default to ₹ — this app
+    // started India-only, so ₹ stays the sensible fallback rather than a
+    // bare "?" for any exchange this mapping doesn't yet know about.
+    default:
+      return "₹";
+  }
+}
+
 export function pnlColor(value: number): string {
   if (value > 0) return colors.success;
   if (value < 0) return colors.danger;

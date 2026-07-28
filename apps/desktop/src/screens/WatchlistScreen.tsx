@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri";
 import type { InstrumentView, MarketSnapshotView, TechnicalAnalysisView } from "../lib/types";
-import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell } from "../lib/theme";
+import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, currencySymbolForExchange } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 
 const AUTO_REFRESH_MS = 30_000;
@@ -300,15 +300,15 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
                   onClick={() => patchRow(inst.symbol, { expanded: !row?.expanded })}
                 >
                   <td style={{ padding: "6px 8px 6px 0", fontWeight: flash ? 700 : 400 }}>{inst.symbol}</td>
-                  <td>{fmtMoney(row?.snapshot?.previous_close)}</td>
-                  <td>{row?.snapshot?.price ? fmtMoney(row.snapshot.price) : (row?.loadingSnapshot ? "…" : "—")}</td>
+                  <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.previous_close)}</td>
+                  <td>{row?.snapshot?.price ? `${currencySymbolForExchange(inst.exchange)}${fmtMoney(row.snapshot.price)}` : (row?.loadingSnapshot ? "…" : "—")}</td>
                   <td style={{ color: dayChange != null ? pnlColor(dayChange) : colors.textMuted, fontWeight: 600 }}>
                     {dayChange != null ? `${(dayChange * 100).toFixed(2)}%` : "—"}
                   </td>
-                  <td>{fmtMoney(row?.snapshot?.day_high)}</td>
-                  <td>{fmtMoney(row?.snapshot?.day_low)}</td>
-                  <td>{fmtMoney(row?.snapshot?.week52_high)}</td>
-                  <td>{fmtMoney(row?.snapshot?.week52_low)}</td>
+                  <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.day_high)}</td>
+                  <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.day_low)}</td>
+                  <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.week52_high)}</td>
+                  <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.week52_low)}</td>
                   <td>{row?.snapshot?.volume?.toLocaleString() ?? "—"}</td>
                   <td style={{ color: rsiColor(row?.analysis?.rsi_14 ?? null), fontWeight: 600 }}>
                     {row?.analysis ? fmtNum(row.analysis.rsi_14) : "—"}
