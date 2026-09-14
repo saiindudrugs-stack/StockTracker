@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavBar } from "./components/NavBar";
 import { PortfolioTabs } from "./components/PortfolioTabs";
-import { CountrySelector, MARKETS } from "./components/CountrySelector";
-import type { Market } from "./components/CountrySelector";
+import { MARKETS } from "./components/CountrySelector";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { HoldingsScreen } from "./screens/HoldingsScreen";
 import { MutualFundsScreen } from "./screens/MutualFundsScreen";
@@ -20,7 +19,15 @@ export default function App() {
   const [portfolios, setPortfolios] = useState<PortfolioView[]>([]);
   const [activePortfolioId, setActivePortfolioId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedMarket, setSelectedMarket] = useState<Market>(MARKETS[0]);
+  // India only, hardcoded — the country selector (US/UK support) was
+  // removed after real bugs surfaced and it was adding untested surface
+  // area with no clear benefit yet. The underlying multi-market code
+  // (currency symbols, Alpha Vantage's US/UK mapping, Dashboard's
+  // by-country grouping) is left in place, not ripped out — it's dormant
+  // and harmless with only one market in play, and safer to leave alone
+  // than to risk new regressions from a bigger deletion while chasing
+  // down other bugs.
+  const selectedMarket = MARKETS[0];
 
   async function refreshPortfolios(selectId?: string) {
     try {
@@ -112,15 +119,12 @@ export default function App() {
           border-right: none;
         }
       `}</style>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingRight: 16 }}>
-        <PortfolioTabs
-          portfolios={portfolios}
-          activeId={activePortfolioId}
-          onSelect={setActivePortfolioId}
-          onCreate={handleCreatePortfolio}
-        />
-        <CountrySelector selected={selectedMarket} onSelect={setSelectedMarket} />
-      </div>
+      <PortfolioTabs
+        portfolios={portfolios}
+        activeId={activePortfolioId}
+        onSelect={setActivePortfolioId}
+        onCreate={handleCreatePortfolio}
+      />
       <NavBar active={screen} onSelect={setScreen} />
       <div style={{ flex: 1, overflow: "auto" }}>
         {error && <p style={{ color: colors.danger, padding: "8px 24px 0" }}>{error}</p>}

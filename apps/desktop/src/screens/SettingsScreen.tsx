@@ -78,8 +78,52 @@ export function SettingsScreen({
     }
   }
 
-  const [aiEnabled, setAiEnabled] = useState(true);
-  const [aiMode, setAiMode] = useState<"local" | "cloud">("local");
+  type AiProvider = "anthropic" | "openai" | "gemini";
+  const AI_PROVIDERS: AiProvider[] = ["anthropic", "openai", "gemini"];
+  const aiDefaultModel: Record<AiProvider, string> = {
+    anthropic: "claude-sonnet-5",
+    openai: "gpt-4o",
+    gemini: "gemini-2.0-flash",
+  };
+  const [aiKeyInput, setAiKeyInput] = useState<Partial<Record<AiProvider, string>>>({});
+  const [aiModelInput, setAiModelInput] = useState<Partial<Record<AiProvider, string>>>({});
+  const [aiKeySaved, setAiKeySaved] = useState<Partial<Record<AiProvider, boolean>>>({});
+  const [aiSaveMsg, setAiSaveMsg] = useState<Partial<Record<AiProvider, string>>>({});
+
+  useEffect(() => {
+    AI_PROVIDERS.forEach((provider) => {
+      api
+        .hasAiProviderKey(provider)
+        .then((saved) => setAiKeySaved((prev) => ({ ...prev, [provider]: saved })))
+        .catch(() => setAiKeySaved((prev) => ({ ...prev, [provider]: false })));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleSaveAiKey(provider: AiProvider) {
+    const value = aiKeyInput[provider];
+    if (!value?.trim()) return;
+    try {
+      await api.saveAiProviderKey(provider, value.trim());
+      setAiKeySaved((prev) => ({ ...prev, [provider]: true }));
+      setAiKeyInput((prev) => ({ ...prev, [provider]: "" }));
+      setAiSaveMsg((prev) => ({ ...prev, [provider]: "Saved. Takes effect immediately." }));
+    } catch (e) {
+      setAiSaveMsg((prev) => ({ ...prev, [provider]: String(e) }));
+    }
+  }
+
+  async function handleSaveAiModel(provider: AiProvider) {
+    const value = aiModelInput[provider];
+    if (!value?.trim()) return;
+    try {
+      await api.saveAiProviderModel(provider, value.trim());
+      setAiModelInput((prev) => ({ ...prev, [provider]: "" }));
+      setAiSaveMsg((prev) => ({ ...prev, [provider]: `Model set to "${value.trim()}".` }));
+    } catch (e) {
+      setAiSaveMsg((prev) => ({ ...prev, [provider]: String(e) }));
+    }
+  }
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
@@ -171,95 +215,57 @@ export function SettingsScreen({
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>AI Assistant</span>
-          <button
-            onClick={() => setAiEnabled((v) => !v)}
-            style={{
-              fontSize: 11,
-              padding: "3px 12px",
-              borderRadius: 10,
-              border: "none",
-              background: aiEnabled ? "#DFF3E3" : "#F0F0F0",
-              color: aiEnabled ? colors.success : colors.textMuted,
-              cursor: "pointer",
-            }}
-          >
-            {aiEnabled ? "On" : "Off"}
-          </button>
-        </div>
-
-        {aiEnabled && (
-          <>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                paddingTop: 10,
-                borderTop: `1px solid ${colors.border}`,
-                marginBottom: 10,
-              }}
-            >
-              <span style={{ fontSize: 12, color: "#444" }}>Mode</span>
-              <div style={{ display: "flex", gap: 12, fontSize: 11 }}>
-                <label style={{ cursor: "pointer" }}>
-                  <input
-                    type="radio"
-                    checked={aiMode === "local"}
-                    onChange={() => setAiMode("local")}
-                    style={{ marginRight: 4 }}
-                  />
-                  Local only
-                </label>
-                <label style={{ cursor: "pointer" }}>
-                  <input
-                    type="radio"
-                    checked={aiMode === "cloud"}
-                    onChange={() => setAiMode("cloud")}
-                    style={{ marginRight: 4 }}
-                  />
-                  Local + cloud backup
-                </label>
-              </div>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>AI portfolio insights</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
+          Configure any of the three below, then use "Get AI Insights" on the Dashboard. Every
+          analysis is a deliberate action — nothing here is called automatically. Keys are stored
+          locally in your own database only; never committed to GitHub, never synced anywhere.
+        </p>
+        {(["anthropic", "openai", "gemini"] as const).map((provider) => (
+          <div key={provider} style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${colors.border}` }}>
+            <p style={{ fontSize: 12, fontWeight: 600, margin: "0 0 4px", textTransform: "capitalize" }}>
+              {provider}
+            </p>
+            <p style={{ fontSize: 12, margin: "0 0 6px" }}>
+              Key:{" "}
+              {aiKeySaved[provider] === undefined ? "checking…" : aiKeySaved[provider] ? (
+                <span style={{ color: colors.success, fontWeight: 600 }}>saved</span>
+              ) : (
+                <span style={{ color: colors.textMuted }}>not set</span>
+              )}
+            </p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+              <input
+                type="password"
+                value={aiKeyInput[provider] ?? ""}
+                onChange={(e) => setAiKeyInput((prev) => ({ ...prev, [provider]: e.target.value }))}
+                placeholder={aiKeySaved[provider] ? "Enter a new key to replace it" : `Paste your ${provider} API key`}
+                style={{ width: 240 }}
+              />
+              <button onClick={() => handleSaveAiKey(provider)} disabled={!aiKeyInput[provider]?.trim()}>
+                Save
+              </button>
             </div>
-
-            <div style={{ paddingTop: 10, borderTop: `1px solid ${colors.border}` }}>
-              <p style={{ fontSize: 12, color: "#444", margin: "0 0 6px" }}>
-                Cloud API key (optional backup) — Anthropic first, OpenAI second
-              </p>
-              <div style={{ display: "flex", gap: 8 }}>
-                <span
-                  style={{
-                    fontSize: 11,
-                    padding: "3px 10px",
-                    border: `1px solid ${colors.border}`,
-                    borderRadius: 6,
-                    background: colors.surface,
-                  }}
-                >
-                  Anthropic — no key set
-                </span>
-                <span
-                  style={{
-                    fontSize: 11,
-                    padding: "3px 10px",
-                    border: `1px dashed ${colors.border}`,
-                    borderRadius: 6,
-                    color: colors.textMuted,
-                  }}
-                >
-                  OpenAI — add key
-                </span>
-              </div>
-              <p style={{ fontSize: 11, color: colors.textMuted, margin: "8px 0 0" }}>
-                A consent screen would show here once, before the first cloud call, stating
-                exactly what's sent — not implemented yet, no cloud calls actually happen in this
-                slice regardless of this toggle.
-              </p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: colors.textMuted }}>Model:</span>
+              <input
+                value={aiModelInput[provider] ?? ""}
+                onChange={(e) => setAiModelInput((prev) => ({ ...prev, [provider]: e.target.value }))}
+                placeholder={aiDefaultModel[provider]}
+                style={{ width: 200, fontSize: 12 }}
+              />
+              <button onClick={() => handleSaveAiModel(provider)} disabled={!aiModelInput[provider]?.trim()} style={{ fontSize: 11 }}>
+                Save model
+              </button>
             </div>
-          </>
-        )}
+            {aiSaveMsg[provider] && <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>{aiSaveMsg[provider]}</p>}
+          </div>
+        ))}
+        <p style={{ fontSize: 11, color: colors.textMuted, margin: 0 }}>
+          Model names are configurable rather than fixed — provider model availability changes
+          over time, and a stale hardcoded model name would be the most likely single point of
+          failure here. Defaults shown as placeholders above.
+        </p>
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>

@@ -299,9 +299,24 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
                   }}
                   onClick={() => patchRow(inst.symbol, { expanded: !row?.expanded })}
                 >
-                  <td style={{ padding: "6px 8px 6px 0", fontWeight: flash ? 700 : 400 }}>{inst.symbol}</td>
+                  <td style={{ padding: "6px 8px 6px 0", fontWeight: flash ? 700 : 400 }}>
+                    {inst.symbol}
+                    {row?.error && (
+                      <span title={row.error} style={{ color: colors.danger, marginLeft: 4, fontSize: 11, cursor: "help" }}>
+                        ⚠
+                      </span>
+                    )}
+                  </td>
                   <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.previous_close)}</td>
-                  <td>{row?.snapshot?.price ? `${currencySymbolForExchange(inst.exchange)}${fmtMoney(row.snapshot.price)}` : (row?.loadingSnapshot ? "…" : "—")}</td>
+                  <td>
+                    {row?.snapshot?.price
+                      ? `${currencySymbolForExchange(inst.exchange)}${fmtMoney(row.snapshot.price)}`
+                      : row?.loadingSnapshot
+                      ? "…"
+                      : row?.error
+                      ? "Failed"
+                      : "—"}
+                  </td>
                   <td style={{ color: dayChange != null ? pnlColor(dayChange) : colors.textMuted, fontWeight: 600 }}>
                     {dayChange != null ? `${(dayChange * 100).toFixed(2)}%` : "—"}
                   </td>

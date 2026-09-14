@@ -22,6 +22,11 @@ use pm_domain::repositories::{
     TransactionRepository,
 };
 use pm_domain::value_objects::{Currency, Isin, Money};
+use pm_infrastructure::ai_insights::{
+    build_portfolio_prompt, AiInsightsClient, ANTHROPIC_API_KEY_SETTING, ANTHROPIC_MODEL_SETTING,
+    DEFAULT_ANTHROPIC_MODEL, DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_MODEL, GEMINI_API_KEY_SETTING,
+    GEMINI_MODEL_SETTING, OPENAI_API_KEY_SETTING, OPENAI_MODEL_SETTING,
+};
 use pm_infrastructure::market_data::{
     alpha_vantage::{AlphaVantageProvider, ALPHA_VANTAGE_API_KEY_SETTING},
     amfi::{AmfiProvider, MutualFundDataSource},
@@ -61,6 +66,7 @@ struct AppState {
     mf_scheme_cache: Arc<SqliteMfSchemeCache>,
     mf_data_source: Arc<AmfiProvider>,
     app_settings: Arc<SqliteAppSettings>,
+    ai_insights: Arc<AiInsightsClient>,
 }
 
 #[derive(Serialize)]
@@ -1304,6 +1310,129 @@ async fn has_alpha_vantage_key(state: State<'_, AppState>) -> Result<bool, Strin
         .unwrap_or(false))
 }
 
+/// Maps a provider name to its (key setting, model setting, default model)
+/// — the one place that knowledge lives, so the save/has/model/generate
+/// commands below all agree with each other by construction rather than
+/// by four separate match statements staying in sync by hand.
+fn ai_provider_settings(provider: &str) -> Result<(&'static str, &'static str, &'static str), String> {
+    match provider {
+        "anthropic" => Ok((ANTHROPIC_API_KEY_SETTING, ANTHROPIC_MODEL_SETTING, DEFAULT_ANTHROPIC_MODEL)),
+        "openai" => Ok((OPENAI_API_KEY_SETTING, OPENAI_MODEL_SETTING, DEFAULT_OPENAI_MODEL)),
+        "gemini" => Ok((GEMINI_API_KEY_SETTING, GEMINI_MODEL_SETTING, DEFAULT_GEMINI_MODEL)),
+        other => Err(format!("unknown AI provider '{other}' — expected anthropic, openai, or gemini")),
+    }
+}
+
+#[tauri::command]
+async fn save_ai_provider_key(state: State<'_, AppState>, provider: String, key: String) -> Result<(), String> {
+    let (key_setting, _, _) = ai_provider_settings(&provider)?;
+    state.app_settings.set(key_setting, key.trim()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn has_ai_provider_key(state: State<'_, AppState>, provider: String) -> Result<bool, String> {
+    let (key_setting, _, _) = ai_provider_settings(&provider)?;
+    Ok(state
+        .app_settings
+        .get(key_setting)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+async fn save_ai_provider_model(state: State<'_, AppState>, provider: String, model: String) -> Result<(), String> {
+    let (_, model_setting, _) = ai_provider_settings(&provider)?;
+    state.app_settings.set(model_setting, model.trim()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_ai_provider_model(state: State<'_, AppState>, provider: String) -> Result<String, String> {
+    let (_, model_setting, default_model) = ai_provider_settings(&provider)?;
+    Ok(state
+        .app_settings
+        .get(model_setting)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| default_model.to_string()))
+}
+
+/// The actual feature: gathers this portfolio's holdings + sector
+/// allocation + XIRR into a structured summary, builds the prompt, and
+/// calls whichever provider the user explicitly chose. Every call here
+/// happens because the user clicked "Get Insights" after seeing a
+/// preview of what would be sent (the frontend shows build_portfolio_
+/// prompt's output before the actual network call) — see the module doc
+/// comment on ai_insights.rs for why that matters.
+#[tauri::command]
+async fn generate_portfolio_insights(state: State<'_, AppState>, portfolio_id: String, provider: String) -> Result<String, String> {
+    let (key_setting, model_setting, default_model) = ai_provider_settings(&provider)?;
+    let api_key = state
+        .app_settings
+        .get(key_setting)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| format!("no {provider} API key configured in Settings"))?;
+    let model = state
+        .app_settings
+        .get(model_setting)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| default_model.to_string());
+
+    let portfolio_id_uuid = parse_portfolio_id(&portfolio_id)?;
+    let portfolio = state.portfolios.get(portfolio_id_uuid).await.map_err(|e| e.to_string())?;
+    let holdings_views = list_holdings(state.clone(), portfolio_id.clone(), None).await?;
+
+    if holdings_views.is_empty() {
+        return Err("This portfolio has no priced holdings yet — nothing to analyze.".to_string());
+    }
+
+    let mut holdings_summary = String::new();
+    let mut sector_totals: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut total_value = 0.0;
+    for h in &holdings_views {
+        let value = h.market_value.as_deref().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        let pnl_pct = h.unrealized_pnl.as_deref().and_then(|v| v.parse::<f64>().ok()).map(|pnl| {
+            let cost = value - pnl;
+            if cost.abs() > 0.0 { (pnl / cost) * 100.0 } else { 0.0 }
+        });
+        holdings_summary.push_str(&format!(
+            "- {} ({}): {} shares, market value {:.0}{}\n",
+            h.symbol,
+            h.sector.as_deref().unwrap_or("Unknown sector"),
+            h.quantity,
+            value,
+            pnl_pct.map(|p| format!(", unrealized P/L {p:.1}%")).unwrap_or_default(),
+        ));
+        *sector_totals.entry(h.sector.clone().unwrap_or_else(|| "Unknown".to_string())).or_insert(0.0) += value;
+        total_value += value;
+    }
+
+    let mut sector_lines: Vec<(String, f64)> = sector_totals.into_iter().collect();
+    sector_lines.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let sector_allocation = sector_lines
+        .iter()
+        .map(|(sector, value)| {
+            let pct = if total_value > 0.0 { (value / total_value) * 100.0 } else { 0.0 };
+            format!("- {sector}: {pct:.1}%\n")
+        })
+        .collect::<String>();
+
+    let xirr_pct = compute_portfolio_xirr(state.clone(), portfolio_id).await.ok().map(|x| x * 100.0);
+
+    let prompt = build_portfolio_prompt(&portfolio.name, &holdings_summary, &sector_allocation, xirr_pct);
+    state
+        .ai_insights
+        .generate_insights(&provider, &api_key, &model, &prompt)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 struct AlertRuleView {
     id: String,
@@ -2025,6 +2154,7 @@ fn main() {
                 mf_scheme_cache: Arc::new(SqliteMfSchemeCache::new(pool)),
                 mf_data_source: Arc::new(AmfiProvider::new()),
                 app_settings: app_settings_repo,
+                ai_insights: Arc::new(AiInsightsClient::new()),
             };
 
             tauri::async_runtime::block_on(seed_demo_data_if_first_launch(&state))
@@ -2066,6 +2196,11 @@ fn main() {
             reset_all_data,
             save_alpha_vantage_key,
             has_alpha_vantage_key,
+            save_ai_provider_key,
+            has_ai_provider_key,
+            save_ai_provider_model,
+            get_ai_provider_model,
+            generate_portfolio_insights,
             refresh_mf_scheme_cache,
             search_mf_schemes,
             add_mutual_fund,

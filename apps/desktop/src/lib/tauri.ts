@@ -127,6 +127,16 @@ export const api = {
   saveAlphaVantageKey: (apiKey: string) => invoke<void>("save_alpha_vantage_key", { apiKey }),
   hasAlphaVantageKey: () => invoke<boolean>("has_alpha_vantage_key"),
 
+  // AI portfolio insights — anthropic/openai/gemini, whichever the user
+  // configures and explicitly picks. Every call is a deliberate, visible
+  // action (see the "Get Insights" button flow), never automatic.
+  saveAiProviderKey: (provider: string, key: string) => invoke<void>("save_ai_provider_key", { provider, key }),
+  hasAiProviderKey: (provider: string) => invoke<boolean>("has_ai_provider_key", { provider }),
+  saveAiProviderModel: (provider: string, model: string) => invoke<void>("save_ai_provider_model", { provider, model }),
+  getAiProviderModel: (provider: string) => invoke<string>("get_ai_provider_model", { provider }),
+  generatePortfolioInsights: (portfolioId: string, provider: string) =>
+    invoke<string>("generate_portfolio_insights", { portfolioId, provider }),
+
   // News & Fundamentals — equities only (no mutual funds). Fundamentals
   // and news are properties of the company, not any one portfolio, same
   // reasoning as getMarketSnapshot.

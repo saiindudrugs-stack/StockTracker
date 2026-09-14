@@ -17,6 +17,40 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
   const [alertRules, setAlertRules] = useState<AlertRuleView[]>([]);
   const [marketSummaries, setMarketSummaries] = useState<MarketSummaryView[]>([]);
 
+  const AI_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
+  const [availableAiProviders, setAvailableAiProviders] = useState<string[]>([]);
+  const [selectedAiProvider, setSelectedAiProvider] = useState<string>("");
+  const [aiConfirming, setAiConfirming] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiInsights, setAiInsights] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all(
+      AI_PROVIDERS.map((p) => api.hasAiProviderKey(p).then((saved) => (saved ? p : null)).catch(() => null))
+    ).then((results) => {
+      const available = results.filter((p): p is (typeof AI_PROVIDERS)[number] => p !== null);
+      setAvailableAiProviders(available);
+      if (available.length > 0) setSelectedAiProvider(available[0]);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [portfolioId]);
+
+  async function handleGenerateInsights() {
+    setAiConfirming(false);
+    setAiLoading(true);
+    setAiError(null);
+    setAiInsights(null);
+    try {
+      const result = await api.generatePortfolioInsights(portfolioId, selectedAiProvider);
+      setAiInsights(result);
+    } catch (e) {
+      setAiError(String(e));
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
   function refreshAlerts() {
     api
       .listAlertRules(portfolioId)
@@ -240,6 +274,74 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {availableAiProviders.length > 0 && (
+        <div style={{ ...panelStyle, marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 4px", fontWeight: 600 }}>
+            AI portfolio insights
+          </p>
+          <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 10px" }}>
+            AI-generated analysis for informational purposes only — not financial advice. Always
+            verify anything here yourself before acting on it.
+          </p>
+
+          {availableAiProviders.length > 1 && (
+            <div style={{ display: "flex", gap: 10, marginBottom: 10, fontSize: 12 }}>
+              {availableAiProviders.map((p) => (
+                <label key={p} style={{ cursor: "pointer", textTransform: "capitalize" }}>
+                  <input
+                    type="radio"
+                    checked={selectedAiProvider === p}
+                    onChange={() => setSelectedAiProvider(p)}
+                    style={{ marginRight: 4 }}
+                  />
+                  {p}
+                </label>
+              ))}
+            </div>
+          )}
+
+          {!aiConfirming && !aiLoading && !aiInsights && (
+            <button onClick={() => setAiConfirming(true)}>Get AI Insights</button>
+          )}
+
+          {aiConfirming && (
+            <div style={{ ...cardStyle, padding: 10 }}>
+              <p style={{ fontSize: 12, margin: "0 0 8px" }}>
+                This sends your holdings (symbol, sector, quantity, market value, unrealized P/L%),
+                sector allocation percentages, and portfolio XIRR to{" "}
+                <strong style={{ textTransform: "capitalize" }}>{selectedAiProvider}</strong>'s API.
+                No account numbers, no other portfolios, nothing beyond what's listed here.
+              </p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={handleGenerateInsights}>Send & Analyze</button>
+                <button onClick={() => setAiConfirming(false)}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {aiLoading && <p style={{ fontSize: 12, color: colors.textMuted }}>Analyzing…</p>}
+
+          {aiError && <p style={{ fontSize: 12, color: colors.danger }}>{aiError}</p>}
+
+          {aiInsights && (
+            <div>
+              <div style={{ ...cardStyle, padding: 12, whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.6 }}>
+                {aiInsights}
+              </div>
+              <button
+                onClick={() => {
+                  setAiInsights(null);
+                  setAiError(null);
+                }}
+                style={{ marginTop: 8, fontSize: 12 }}
+              >
+                Clear
+              </button>
+            </div>
+          )}
         </div>
       )}
 
