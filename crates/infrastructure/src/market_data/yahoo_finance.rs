@@ -133,14 +133,28 @@ struct YahooMeta {
 }
 #[derive(Debug, Deserialize)]
 struct YahooIndicators {
+    #[serde(default)]
     quote: Vec<YahooQuoteSeries>,
 }
 #[derive(Debug, Deserialize)]
 struct YahooQuoteSeries {
+    // #[serde(default)] here fixes a real failure: Yahoo's response
+    // apparently now omits these keys entirely in some conditions (seen
+    // failing "missing field `open`" even for fetch_quote, which never
+    // reads this array at all — only meta.* below). Individual candle
+    // values were already Option<f64> for legitimate missing data points;
+    // this additionally tolerates the whole key being absent, rather than
+    // failing deserialization of the entire response over an array this
+    // code doesn't even use for a plain quote fetch.
+    #[serde(default)]
     open: Vec<Option<f64>>,
+    #[serde(default)]
     high: Vec<Option<f64>>,
+    #[serde(default)]
     low: Vec<Option<f64>>,
+    #[serde(default)]
     close: Vec<Option<f64>>,
+    #[serde(default)]
     volume: Vec<Option<f64>>,
 }
 
@@ -315,6 +329,55 @@ mod tests {
         assert_eq!(meta.regular_market_price, 2510.75);
         assert_eq!(meta.regular_market_day_high, Some(2525.0));
         assert_eq!(meta.regular_market_volume, Some(8234567));
+    }
+
+    /// Regression test for a real failure: "missing field `open`" broke
+    /// fetch_quote entirely, even though fetch_quote never reads this
+    /// array — it only uses meta.* above. Yahoo's response apparently now
+    /// omits the indicators.quote.open/high/low/close/volume keys
+    /// entirely under some conditions, not just individual null values
+    /// within them (which was already handled). This must still parse.
+    #[test]
+    fn parses_successfully_even_when_indicators_quote_omits_ohlc_keys_entirely() {
+        let json = r#"{
+            "chart": {
+                "result": [{
+                    "meta": {
+                        "regularMarketPrice": 2510.75,
+                        "regularMarketDayHigh": 2525.0,
+                        "regularMarketDayLow": 2495.5,
+                        "fiftyTwoWeekHigh": 2900.0,
+                        "fiftyTwoWeekLow": 2100.0,
+                        "regularMarketVolume": 8234567
+                    },
+                    "timestamp": [1721764200],
+                    "indicators": {
+                        "quote": [{}]
+                    }
+                }],
+                "error": null
+            }
+        }"#;
+        let parsed: YahooChartResponse = serde_json::from_str(json).unwrap();
+        let meta = &parsed.chart.result.unwrap()[0].meta;
+        assert_eq!(meta.regular_market_price, 2510.75);
+    }
+
+    /// Same fix, the even more extreme case — indicators present but the
+    /// quote array itself empty.
+    #[test]
+    fn parses_successfully_even_when_quote_array_is_empty() {
+        let json = r#"{
+            "chart": {
+                "result": [{
+                    "meta": { "regularMarketPrice": 100.0 },
+                    "indicators": { "quote": [] }
+                }],
+                "error": null
+            }
+        }"#;
+        let parsed: YahooChartResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.chart.result.unwrap()[0].meta.regular_market_price, 100.0);
     }
 
     #[test]
