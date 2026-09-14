@@ -145,7 +145,7 @@ export function dayChangeRowTint(pct: number | null): string | undefined {
 /// move — applied only when dayChangeRowTint returns nothing, so it never
 /// competes with the move-based tint above.
 export function zebraRowTint(index: number): string {
-  return index % 2 === 0 ? "transparent" : "rgba(0, 0, 0, 0.02)";
+  return index % 2 === 0 ? "transparent" : "#F3F5F8";
 }
 
 /// Whether a row's ticker should flash — beyond the threshold in either

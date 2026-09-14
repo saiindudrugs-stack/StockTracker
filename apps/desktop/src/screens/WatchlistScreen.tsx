@@ -36,6 +36,7 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasAutoPopulatedRef = useRef(false);
 
   async function refreshInstruments() {
     try {
@@ -49,6 +50,22 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
   useEffect(() => {
     refreshInstruments();
   }, []);
+
+  // Runs once, the first time the instrument list actually has rows —
+  // "automatically populated" per explicit request, not requiring a
+  // manual Refresh All Quotes click or a per-row Analyze click. Snapshots
+  // first, then analysis (skips rows already analyzed), sequentially
+  // rather than in parallel, for the same rate-limit reasoning as both
+  // functions' own comments.
+  useEffect(() => {
+    if (instruments.length === 0 || hasAutoPopulatedRef.current) return;
+    hasAutoPopulatedRef.current = true;
+    (async () => {
+      await refreshAllSnapshots();
+      await autoAnalyzeAll();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instruments.length]);
 
   const emptyRow: Row = {
     snapshot: null,
@@ -81,8 +98,16 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
   }
 
   async function refreshAllSnapshots() {
+    // A fixed pause between each request, not just back-to-back awaits —
+    // Yahoo's unofficial endpoint has no documented rate limit, and firing
+    // 20+ requests in a tight sequential loop with zero delay is exactly
+    // the pattern that trips it mid-burst: the first several succeed, then
+    // it starts failing everything after, even for rock-solid tickers.
+    // 250ms adds a few seconds for a large watchlist but makes each
+    // request meaningfully less likely to land in a rate-limited burst.
     for (const inst of instruments) {
       await refreshSnapshot(inst.symbol);
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
 
@@ -93,6 +118,26 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
       patchRow(symbol, { analysis, loadingAnalysis: false });
     } catch (e) {
       patchRow(symbol, { loadingAnalysis: false, error: String(e) });
+    }
+  }
+
+  /// Same request-burst reasoning as refreshAllSnapshots, but for the much
+  /// heavier full-year-history call — auto-populating Phase/Signal for
+  /// every row without staggering would double the request volume during
+  /// the exact window most likely to trigger rate-limiting. Runs once per
+  /// symbol (skips rows that already have analysis, e.g. from a manual
+  /// "Analyze" click), not on every refresh.
+  async function autoAnalyzeAll() {
+    for (const inst of instruments) {
+      if (rows[inst.symbol]?.analysis) continue;
+      patchRow(inst.symbol, { loadingAnalysis: true });
+      try {
+        const analysis = await api.analyzeMarketPhase(inst.symbol);
+        patchRow(inst.symbol, { analysis, loadingAnalysis: false });
+      } catch (e) {
+        patchRow(inst.symbol, { loadingAnalysis: false, error: String(e) });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
 
@@ -224,7 +269,14 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
           style={{ width: 140 }}
         />
         <button onClick={handleAddTicker}>Add to Watchlist</button>
-        <button onClick={refreshAllSnapshots}>Refresh All Quotes</button>
+        <button
+          onClick={async () => {
+            await refreshAllSnapshots();
+            await autoAnalyzeAll();
+          }}
+        >
+          Refresh All Quotes
+        </button>
         <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
           <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
           Auto-refresh every 30s

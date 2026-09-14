@@ -93,6 +93,7 @@ export const api = {
   // backend rejects it if any portfolio still holds a non-zero quantity.
   removeHolding: (portfolioId: string, symbol: string) => invoke<void>("remove_holding", { portfolioId, symbol }),
   removeFromWatchlist: (symbol: string) => invoke<void>("remove_from_watchlist", { symbol }),
+  removeNonIndianInstruments: () => invoke<{ removed: string[]; kept: string[] }>("remove_non_indian_instruments"),
 
   // Stop-loss / target alerter. condition is "stop_loss" (fires at or
   // below threshold) or "target" (fires at or above). Trigger status is
@@ -126,6 +127,20 @@ export const api = {
   // doc comment on has_alpha_vantage_key).
   saveAlphaVantageKey: (apiKey: string) => invoke<void>("save_alpha_vantage_key", { apiKey }),
   hasAlphaVantageKey: () => invoke<boolean>("has_alpha_vantage_key"),
+
+  saveUpstoxToken: (token: string) => invoke<void>("save_upstox_token", { token }),
+  hasUpstoxToken: () => invoke<boolean>("has_upstox_token"),
+  refreshUpstoxInstrumentCache: () => invoke<{ instrument_count: number }>("refresh_upstox_instrument_cache"),
+
+  saveMarketDataPriority: (order: string) => invoke<void>("save_market_data_priority", { order }),
+  getMarketDataPriority: () => invoke<string>("get_market_data_priority"),
+
+  // Real connection tests — a saved key proves nothing about whether it's
+  // actually valid, so these make one small live call per source rather
+  // than just checking "is something saved." Explicit only (a button
+  // click), never automatic.
+  testMarketDataConnection: (provider: string) => invoke<string>("test_market_data_connection", { provider }),
+  testAiProviderConnection: (provider: string) => invoke<string>("test_ai_provider_connection", { provider }),
 
   // AI portfolio insights — anthropic/openai/gemini, whichever the user
   // configures and explicitly picks. Every call is a deliberate, visible

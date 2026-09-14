@@ -130,7 +130,7 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
           <div style={{ display: "flex", gap: 12, margin: "0 0 16px" }}>
           <div style={{ ...cardStyle, minWidth: 160 }}>
             <div style={{ fontSize: 12, color: colors.textMuted }}>Net worth</div>
-            <div style={{ fontSize: 18, fontWeight: 600 }}>₹{summary.net_worth}</div>
+            <div style={{ fontSize: 18, fontWeight: 600 }}>₹{fmtMoney(summary.net_worth)}</div>
           </div>
           <div style={{ ...cardStyle, minWidth: 160 }}>
             <div style={{ fontSize: 12, color: colors.textMuted }}>Unrealized P/L</div>
@@ -146,7 +146,7 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
                     : undefined,
               }}
             >
-              ₹{summary.overall_unrealized_pnl}
+              ₹{fmtMoney(summary.overall_unrealized_pnl)}
             </div>
           </div>
           <div style={{ ...cardStyle, minWidth: 160 }}>
@@ -163,7 +163,7 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
                     : undefined,
               }}
             >
-              ₹{summary.overall_realized_pnl}
+              ₹{fmtMoney(summary.overall_realized_pnl)}
             </div>
           </div>
           <div style={{ ...cardStyle, minWidth: 160 }}>
@@ -386,8 +386,8 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
                   >
                     <span style={{ fontWeight: a.is_triggered_now ? 700 : 400 }}>
                       {a.is_triggered_now ? "⚠ " : a.is_nearing ? "近 " : ""}
-                      {a.symbol} {a.condition === "stop_loss" ? "≤" : "≥"} ₹{a.threshold_price}
-                      {a.current_price != null && <span style={{ color: colors.textMuted }}> (now ₹{a.current_price})</span>}
+                      {a.symbol} {a.condition === "stop_loss" ? "≤" : "≥"} ₹{fmtMoney(a.threshold_price)}
+                      {a.current_price != null && <span style={{ color: colors.textMuted }}> (now ₹{fmtMoney(a.current_price)})</span>}
                       {a.is_nearing && !a.is_triggered_now && (
                         <span style={{ color: colors.textMuted, fontStyle: "italic" }}> — nearing</span>
                       )}

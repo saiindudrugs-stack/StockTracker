@@ -19,6 +19,7 @@ pub mod mf_scheme_cache;
 pub mod portfolio_repository;
 pub mod price_repository;
 pub mod transaction_repository;
+pub mod upstox_instrument_cache;
 
 pub use alert_rule_repository::SqliteAlertRuleRepository;
 pub use app_settings::SqliteAppSettings;
@@ -28,6 +29,7 @@ pub use mf_scheme_cache::SqliteMfSchemeCache;
 pub use portfolio_repository::SqlitePortfolioRepository;
 pub use price_repository::SqlitePriceRepository;
 pub use transaction_repository::SqliteTransactionRepository;
+pub use upstox_instrument_cache::{SqliteUpstoxInstrumentCache, UpstoxInstrumentRow};
 
 /// Shared handle to the connection. `rusqlite::Connection` isn't `Sync`, so
 /// every repository wraps blocking calls in `spawn_blocking` against a clone
@@ -217,5 +219,18 @@ CREATE INDEX IF NOT EXISTS idx_mf_scheme_cache_name ON mf_scheme_cache(scheme_na
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- Disposable, wholesale-replaced from Upstox's daily-refreshed instrument
+-- master file. instrument_key resolves quotes/historical candles;
+-- isin resolves the separate Fundamentals API, which is keyed by ISIN,
+-- not trading_symbol or instrument_key — same cache serves both, since
+-- Upstox's own instrument file carries all three fields together.
+CREATE TABLE IF NOT EXISTS upstox_instrument_cache (
+    trading_symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    instrument_key TEXT NOT NULL,
+    isin TEXT,
+    PRIMARY KEY (trading_symbol, exchange)
 );
 "#;

@@ -179,10 +179,14 @@ export interface FundamentalsView {
   description: string | null;
   market_cap: string | null;
   pe_ratio: string | null;
+  pb_ratio: string | null;
+  roe: string | null;
+  roce: string | null;
   dividend_yield: string | null;
   week52_high: string | null;
   week52_low: string | null;
   revenue_by_period: RevenuePeriodView[];
+  source: string;
 }
 
 export interface NewsItemView {

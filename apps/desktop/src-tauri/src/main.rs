@@ -30,13 +30,16 @@ use pm_infrastructure::ai_insights::{
 use pm_infrastructure::market_data::{
     alpha_vantage::{AlphaVantageProvider, ALPHA_VANTAGE_API_KEY_SETTING},
     amfi::{AmfiProvider, MutualFundDataSource},
-    composite::CompositeMarketDataProvider,
+    prioritized::{PrioritizedMarketDataProvider, DEFAULT_PRIORITY_ORDER, MARKET_DATA_PRIORITY_SETTING},
+    upstox::{UpstoxProvider, UPSTOX_ANALYTICS_TOKEN_SETTING},
+    upstox_fundamentals::UpstoxFundamentalsClient,
     yahoo_finance::YahooFinanceProvider,
     MarketDataProvider,
 };
 use pm_infrastructure::sqlite::{
     SqliteAlertRuleRepository, SqliteAppSettings, SqliteHoldingRepository, SqliteInstrumentRepository,
     SqliteMfSchemeCache, SqlitePool, SqlitePortfolioRepository, SqlitePriceRepository, SqliteTransactionRepository,
+    SqliteUpstoxInstrumentCache,
 };
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -54,15 +57,21 @@ struct AppState {
     instruments: Arc<SqliteInstrumentRepository>,
     prices: Arc<SqlitePriceRepository>,
     alert_rules: Arc<SqliteAlertRuleRepository>,
-    market_data: Arc<CompositeMarketDataProvider<YahooFinanceProvider, AlphaVantageProvider>>,
+    /// Replaces the old fixed generic nesting (Upstox -> (Yahoo ->
+    /// AlphaVantage)) — that hardcoded the order at compile time, which
+    /// cannot represent "the user reorders this from Settings." See the
+    /// module doc comment on prioritized.rs for the full reasoning.
+    market_data: Arc<PrioritizedMarketDataProvider>,
     /// Separate from `market_data` above deliberately: fetch_fundamentals
     /// and fetch_news are inherent methods on YahooFinanceProvider itself
-    /// (News & Fundamentals is Yahoo-only for now, no fallback provider
-    /// for these two), not part of the MarketDataProvider trait the
-    /// composite wraps — so they need a concrete instance, not the trait
-    /// object. Cheap to have a second one; YahooFinanceProvider::new()
-    /// just builds an HTTP client, no shared state to duplicate.
+    /// (News & Fundamentals started Yahoo-only), not part of the
+    /// MarketDataProvider trait the prioritized provider wraps — so they
+    /// need a concrete instance, not the trait object. Cheap to have a
+    /// second one; YahooFinanceProvider::new() just builds an HTTP
+    /// client, no shared state to duplicate.
     yahoo_direct: Arc<YahooFinanceProvider>,
+    upstox_fundamentals: Arc<UpstoxFundamentalsClient>,
+    upstox_instruments: Arc<SqliteUpstoxInstrumentCache>,
     mf_scheme_cache: Arc<SqliteMfSchemeCache>,
     mf_data_source: Arc<AmfiProvider>,
     app_settings: Arc<SqliteAppSettings>,
@@ -270,14 +279,29 @@ struct FundamentalsView {
     description: Option<String>,
     market_cap: Option<String>,
     pe_ratio: Option<String>,
+    /// Upstox-only fields — None when the Yahoo fallback path is the one
+    /// that actually succeeded, since Yahoo's fundamentals fetch doesn't
+    /// carry these.
+    pb_ratio: Option<String>,
+    roe: Option<String>,
+    roce: Option<String>,
     dividend_yield: Option<String>,
     week52_high: Option<String>,
     week52_low: Option<String>,
     revenue_by_period: Vec<RevenuePeriodView>,
+    /// Which source actually answered — surfaced to the frontend so it
+    /// can be honest about where the numbers came from, same spirit as
+    /// every other "here's what this actually is" disclosure in this app.
+    source: String,
 }
 
 /// Portfolio-agnostic, like get_market_snapshot — fundamentals are a
 /// property of the company, not of any one portfolio's holding of it.
+/// Tries Upstox's Company Fundamentals API first (needs a saved token
+/// AND a refreshed instrument cache to resolve the ISIN) — falls back to
+/// Yahoo automatically if either isn't set up yet, or if Upstox's call
+/// itself fails, so this command still works with zero Upstox
+/// configuration, exactly as before.
 #[tauri::command]
 async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<FundamentalsView, String> {
     let instrument = state
@@ -286,6 +310,11 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+
+    if let Some(view) = try_upstox_fundamentals(&state, &instrument.symbol, &instrument.exchange).await {
+        return Ok(view);
+    }
+
     let f = state
         .yahoo_direct
         .fetch_fundamentals(&instrument.symbol, &instrument.exchange)
@@ -298,6 +327,9 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
         description: f.description,
         market_cap: f.market_cap.map(|d| d.to_string()),
         pe_ratio: f.pe_ratio.map(|d| d.to_string()),
+        pb_ratio: None,
+        roe: None,
+        roce: None,
         dividend_yield: f.dividend_yield.map(|d| d.to_string()),
         week52_high: f.week52_high.map(|d| d.to_string()),
         week52_low: f.week52_low.map(|d| d.to_string()),
@@ -306,6 +338,44 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
             .into_iter()
             .map(|p| RevenuePeriodView { period_end: p.period_end, revenue: p.revenue.to_string(), net_income: p.net_income.map(|d| d.to_string()) })
             .collect(),
+        source: "yahoo".to_string(),
+    })
+}
+
+/// Returns None on ANY failure along the way (no token, no cached ISIN,
+/// the API call itself failing) — every failure mode here just means
+/// "fall back to Yahoo," never an error the caller has to handle
+/// specially, which is what keeps get_fundamentals itself simple.
+async fn try_upstox_fundamentals(state: &State<'_, AppState>, symbol: &str, exchange: &str) -> Option<FundamentalsView> {
+    let token = state.app_settings.get(UPSTOX_ANALYTICS_TOKEN_SETTING).await.ok().flatten()?;
+    if token.trim().is_empty() {
+        return None;
+    }
+    let isin = state.upstox_instruments.get_isin(symbol, exchange).await.ok().flatten()?;
+    let f = state.upstox_fundamentals.fetch_fundamentals(&isin, &token).await.ok()?;
+
+    Some(FundamentalsView {
+        sector: f.sector,
+        industry: f.industry,
+        description: f.description,
+        market_cap: None, // not returned by Upstox's fundamentals suite
+        pe_ratio: f.pe_ratio.map(|v| v.to_string()),
+        pb_ratio: f.pb_ratio.map(|v| v.to_string()),
+        roe: f.roe.map(|v| v.to_string()),
+        roce: f.roce.map(|v| v.to_string()),
+        dividend_yield: None, // not returned by Upstox's fundamentals suite
+        week52_high: None,
+        week52_low: None,
+        revenue_by_period: f
+            .income_statement
+            .into_iter()
+            .map(|p| RevenuePeriodView {
+                period_end: p.period_end,
+                revenue: p.revenue.to_string(),
+                net_income: p.net_profit.map(|d| d.to_string()),
+            })
+            .collect(),
+        source: "upstox".to_string(),
     })
 }
 
@@ -321,7 +391,10 @@ struct NewsItemView {
 /// Top 5, regulatory-flagged items first — see the honesty note at the
 /// top of yahoo_fundamentals_news.rs for exactly what "regulatory" means
 /// here (a keyword match over headlines, not a verified separate filings
-/// feed).
+/// feed). Tries Upstox's News API first (needs a saved token and a
+/// cached instrument_key), falls back to Yahoo automatically otherwise —
+/// same "always still works with zero Upstox setup" reasoning as
+/// get_fundamentals.
 #[tauri::command]
 async fn get_stock_news(state: State<'_, AppState>, symbol: String) -> Result<Vec<NewsItemView>, String> {
     let instrument = state
@@ -330,6 +403,11 @@ async fn get_stock_news(state: State<'_, AppState>, symbol: String) -> Result<Ve
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+
+    if let Some(items) = try_upstox_news(&state, &instrument.symbol, &instrument.exchange).await {
+        return Ok(items);
+    }
+
     let news = state
         .yahoo_direct
         .fetch_news(&instrument.symbol, &instrument.exchange)
@@ -346,6 +424,37 @@ async fn get_stock_news(state: State<'_, AppState>, symbol: String) -> Result<Ve
             is_regulatory: n.is_regulatory,
         })
         .collect())
+}
+
+/// Same "None on any failure, caller falls back" contract as
+/// try_upstox_fundamentals. Resolves instrument_key (not ISIN — the News
+/// API takes instrument_key, the Fundamentals API takes ISIN, different
+/// identifiers for the same underlying instrument).
+async fn try_upstox_news(state: &State<'_, AppState>, symbol: &str, exchange: &str) -> Option<Vec<NewsItemView>> {
+    let token = state.app_settings.get(UPSTOX_ANALYTICS_TOKEN_SETTING).await.ok().flatten()?;
+    if token.trim().is_empty() {
+        return None;
+    }
+    let instrument_key = state.upstox_instruments.get_instrument_key(symbol, exchange).await.ok().flatten()?;
+    let items = state.upstox_fundamentals.fetch_news(&instrument_key, &token, 5).await.ok()?;
+
+    Some(
+        items
+            .into_iter()
+            .map(|n| {
+                let published_at = chrono::DateTime::from_timestamp_millis(n.published_at_ms)
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+                    .unwrap_or_default();
+                NewsItemView {
+                    is_regulatory: pm_infrastructure::market_data::yahoo_fundamentals_news::looks_regulatory(&n.headline),
+                    title: n.headline,
+                    publisher: "Upstox".to_string(),
+                    link: n.link,
+                    published_at,
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Adds a new ticker the user wants to track. No broker/exchange validation
@@ -1310,6 +1419,109 @@ async fn has_alpha_vantage_key(state: State<'_, AppState>) -> Result<bool, Strin
         .unwrap_or(false))
 }
 
+#[tauri::command]
+async fn save_upstox_token(state: State<'_, AppState>, token: String) -> Result<(), String> {
+    state.app_settings.set(UPSTOX_ANALYTICS_TOKEN_SETTING, token.trim()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn has_upstox_token(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state
+        .app_settings
+        .get(UPSTOX_ANALYTICS_TOKEN_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|t| !t.trim().is_empty())
+        .unwrap_or(false))
+}
+
+#[derive(Serialize)]
+struct UpstoxRefreshResult {
+    instrument_count: usize,
+}
+
+/// Manual, user-triggered (Settings button) — downloads and caches
+/// Upstox's NSE + BSE equity instrument lists. Required once before
+/// Upstox can resolve any symbol to its instrument_key or ISIN; the
+/// underlying files refresh daily on Upstox's side, so re-running this
+/// periodically keeps delistings/relistings current.
+#[tauri::command]
+async fn refresh_upstox_instrument_cache(state: State<'_, AppState>) -> Result<UpstoxRefreshResult, String> {
+    let provider = UpstoxProvider::new(state.app_settings.clone(), state.upstox_instruments.clone());
+    let count = provider.refresh_instrument_cache().await.map_err(|e| e.to_string())?;
+    Ok(UpstoxRefreshResult { instrument_count: count })
+}
+
+#[tauri::command]
+async fn save_market_data_priority(state: State<'_, AppState>, order: String) -> Result<(), String> {
+    state.app_settings.set(MARKET_DATA_PRIORITY_SETTING, &order).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_market_data_priority(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state
+        .app_settings
+        .get(MARKET_DATA_PRIORITY_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|o| !o.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_PRIORITY_ORDER.to_string()))
+}
+
+/// The whole point of the "green indicator light": a saved key proves
+/// nothing about whether it's actually valid or whether the network path
+/// works, so this makes one small REAL call per source rather than just
+/// checking "is something saved." Explicit, user-triggered (a button per
+/// source in Settings) — never automatic — since Alpha Vantage's very low
+/// rate limit in particular would drain fast if this ran on every Settings
+/// page load. RELIANCE (India) and AAPL (US, already confirmed live by
+/// the user earlier this session) are used as fixed, always-listed test
+/// symbols — the point is proving connectivity + auth, not the price.
+#[tauri::command]
+async fn test_market_data_connection(state: State<'_, AppState>, provider: String) -> Result<String, String> {
+    let quote = match provider.as_str() {
+        "upstox" => {
+            let p = UpstoxProvider::new(state.app_settings.clone(), state.upstox_instruments.clone());
+            p.fetch_quote("RELIANCE", "NSE").await
+        }
+        "yahoo" => state.yahoo_direct.fetch_quote("RELIANCE", "NSE").await,
+        "alpha_vantage" => {
+            let p = AlphaVantageProvider::new(state.app_settings.clone());
+            p.fetch_quote("AAPL", "NASDAQ").await
+        }
+        other => return Err(format!("unknown market data provider '{other}'")),
+    };
+    quote.map(|q| format!("Connected — test quote (RELIANCE/AAPL): {}", q.price)).map_err(|e| e.to_string())
+}
+
+/// Same reasoning as test_market_data_connection, applied to the AI
+/// providers — a tiny real prompt, not just "is a key saved."
+#[tauri::command]
+async fn test_ai_provider_connection(state: State<'_, AppState>, provider: String) -> Result<String, String> {
+    let (key_setting, model_setting, default_model) = ai_provider_settings(&provider)?;
+    let api_key = state
+        .app_settings
+        .get(key_setting)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| format!("no {provider} API key configured in Settings"))?;
+    let model = state
+        .app_settings
+        .get(model_setting)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| default_model.to_string());
+
+    state
+        .ai_insights
+        .generate_insights(&provider, &api_key, &model, "Reply with exactly one word: OK")
+        .await
+        .map(|_| "Connected".to_string())
+        .map_err(|e| e.to_string())
+}
+
 /// Maps a provider name to its (key setting, model setting, default model)
 /// — the one place that knowledge lives, so the save/has/model/generate
 /// commands below all agree with each other by construction rather than
@@ -1918,7 +2130,16 @@ async fn remove_from_watchlist(state: State<'_, AppState>, symbol: String) -> Re
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+    remove_instrument_if_unheld(&state, &instrument)
+        .await
+        .map_err(|e| format!("Can't remove {symbol} — {e}. Remove it from Holdings there first."))
+}
 
+/// Shared by remove_from_watchlist and remove_non_indian_instruments —
+/// same safety check either way: refuse to delete an instrument that's
+/// still actually held (non-zero quantity) in any portfolio, only ever
+/// remove ones that are purely tracked/watched.
+async fn remove_instrument_if_unheld(state: &State<'_, AppState>, instrument: &Instrument) -> Result<(), String> {
     let portfolios = state.portfolios.list_all().await.map_err(|e| e.to_string())?;
     for portfolio in &portfolios {
         if let Some(holding) = state
@@ -1929,14 +2150,46 @@ async fn remove_from_watchlist(state: State<'_, AppState>, symbol: String) -> Re
         {
             if !holding.quantity.is_zero() {
                 return Err(format!(
-                    "Can't remove {symbol} — still held ({} shares) in portfolio '{}'. Remove it from Holdings there first.",
+                    "still held ({} shares) in portfolio '{}'",
                     holding.quantity, portfolio.name
                 ));
             }
         }
     }
-
     state.instruments.delete(instrument.id).await.map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct CleanupResult {
+    removed: Vec<String>,
+    kept: Vec<String>,
+}
+
+/// Bulk removes every tracked instrument that isn't on an Indian exchange
+/// — added after the country/market selector was removed in favor of an
+/// India-only app, to clean up stray non-Indian tickers (like a US stock
+/// added while that selector still existed) rather than leaving them
+/// sitting in Watchlist forever with no way to add new ones but no
+/// cleanup of old ones either. Anything still genuinely held anywhere is
+/// left alone (reported in `kept`, not silently skipped).
+#[tauri::command]
+async fn remove_non_indian_instruments(state: State<'_, AppState>) -> Result<CleanupResult, String> {
+    let all = state.instruments.list_all().await.map_err(|e| e.to_string())?;
+    let mut removed = Vec::new();
+    let mut kept = Vec::new();
+
+    for instrument in all {
+        let is_indian = matches!(instrument.exchange.to_uppercase().as_str(), "NSE" | "BSE" | "AMFI");
+        if is_indian {
+            continue;
+        }
+        let symbol = instrument.symbol.clone();
+        match remove_instrument_if_unheld(&state, &instrument).await {
+            Ok(()) => removed.push(symbol),
+            Err(_) => kept.push(symbol),
+        }
+    }
+    Ok(CleanupResult { removed, kept })
 }
 
 /// Shared by record_buy and record_sell — both are "look up the instrument,
@@ -2136,10 +2389,13 @@ fn main() {
             let pool = SqlitePool::open(db_path.to_str().unwrap()).expect("failed to open local database");
 
             let app_settings_repo = Arc::new(SqliteAppSettings::new(pool.clone()));
-            let market_data_provider = Arc::new(CompositeMarketDataProvider::new(
-                YahooFinanceProvider::new(),
-                Some(AlphaVantageProvider::new(app_settings_repo.clone())),
-            ));
+            let upstox_instruments_repo = Arc::new(SqliteUpstoxInstrumentCache::new(pool.clone()));
+            let named_providers: Vec<(String, Arc<dyn MarketDataProvider>)> = vec![
+                ("upstox".to_string(), Arc::new(UpstoxProvider::new(app_settings_repo.clone(), upstox_instruments_repo.clone()))),
+                ("yahoo".to_string(), Arc::new(YahooFinanceProvider::new())),
+                ("alpha_vantage".to_string(), Arc::new(AlphaVantageProvider::new(app_settings_repo.clone()))),
+            ];
+            let market_data_provider = Arc::new(PrioritizedMarketDataProvider::new(named_providers, app_settings_repo.clone()));
 
             let state = AppState {
                 pool: pool.clone(),
@@ -2151,6 +2407,8 @@ fn main() {
                 alert_rules: Arc::new(SqliteAlertRuleRepository::new(pool.clone())),
                 market_data: market_data_provider,
                 yahoo_direct: Arc::new(YahooFinanceProvider::new()),
+                upstox_fundamentals: Arc::new(UpstoxFundamentalsClient::new()),
+                upstox_instruments: upstox_instruments_repo,
                 mf_scheme_cache: Arc::new(SqliteMfSchemeCache::new(pool)),
                 mf_data_source: Arc::new(AmfiProvider::new()),
                 app_settings: app_settings_repo,
@@ -2186,6 +2444,7 @@ fn main() {
             get_portfolio_analysis,
             remove_holding,
             remove_from_watchlist,
+            remove_non_indian_instruments,
             create_alert_rule,
             list_alert_rules,
             delete_alert_rule,
@@ -2196,6 +2455,13 @@ fn main() {
             reset_all_data,
             save_alpha_vantage_key,
             has_alpha_vantage_key,
+            save_upstox_token,
+            has_upstox_token,
+            refresh_upstox_instrument_cache,
+            save_market_data_priority,
+            get_market_data_priority,
+            test_market_data_connection,
+            test_ai_provider_connection,
             save_ai_provider_key,
             has_ai_provider_key,
             save_ai_provider_model,

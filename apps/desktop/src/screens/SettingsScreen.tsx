@@ -5,6 +5,7 @@ import { api } from "../lib/tauri";
 import type { PortfolioView } from "../lib/types";
 import { colors, panelStyle } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
+import { ConnectionIndicator } from "../components/ConnectionIndicator";
 
 export function SettingsScreen({
   portfolios,
@@ -23,6 +24,68 @@ export function SettingsScreen({
   // check() and downloadAndInstall() are two separate steps so the user
   // sees what's new before committing to the download.
   const [pendingUpdate, setPendingUpdate] = useState<Awaited<ReturnType<typeof check>> | null>(null);
+
+  const [upstoxTokenInput, setUpstoxTokenInput] = useState("");
+  const [upstoxTokenSaved, setUpstoxTokenSaved] = useState<boolean | null>(null);
+  const [upstoxSaveMsg, setUpstoxSaveMsg] = useState<string | null>(null);
+  const [upstoxRefreshing, setUpstoxRefreshing] = useState(false);
+  const [upstoxRefreshMsg, setUpstoxRefreshMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .hasUpstoxToken()
+      .then(setUpstoxTokenSaved)
+      .catch(() => setUpstoxTokenSaved(false));
+  }, []);
+
+  async function handleSaveUpstoxToken() {
+    if (!upstoxTokenInput.trim()) return;
+    try {
+      await api.saveUpstoxToken(upstoxTokenInput.trim());
+      setUpstoxTokenSaved(true);
+      setUpstoxTokenInput("");
+      setUpstoxSaveMsg("Saved. Takes effect immediately.");
+    } catch (e) {
+      setUpstoxSaveMsg(String(e));
+    }
+  }
+
+  async function handleRefreshUpstoxInstruments() {
+    setUpstoxRefreshing(true);
+    setUpstoxRefreshMsg(null);
+    try {
+      const result = await api.refreshUpstoxInstrumentCache();
+      setUpstoxRefreshMsg(`Cached ${result.instrument_count.toLocaleString()} NSE + BSE equity instruments.`);
+    } catch (e) {
+      setUpstoxRefreshMsg(String(e));
+    } finally {
+      setUpstoxRefreshing(false);
+    }
+  }
+
+  const [priorityOrder, setPriorityOrder] = useState<string[]>(["upstox", "yahoo", "alpha_vantage"]);
+  const [priorityMsg, setPriorityMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .getMarketDataPriority()
+      .then((order) => setPriorityOrder(order.split(",").map((s) => s.trim()).filter(Boolean)))
+      .catch(() => {});
+  }, []);
+
+  async function moveProviderPriority(index: number, direction: -1 | 1) {
+    const next = [...priorityOrder];
+    const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    setPriorityOrder(next);
+    try {
+      await api.saveMarketDataPriority(next.join(","));
+      setPriorityMsg("Order saved. Takes effect immediately.");
+    } catch (e) {
+      setPriorityMsg(String(e));
+    }
+  }
 
   const [avKeyInput, setAvKeyInput] = useState("");
   const [avKeySaved, setAvKeySaved] = useState<boolean | null>(null);
@@ -124,6 +187,25 @@ export function SettingsScreen({
       setAiSaveMsg((prev) => ({ ...prev, [provider]: String(e) }));
     }
   }
+
+  const [cleanupRunning, setCleanupRunning] = useState(false);
+  const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
+
+  async function handleCleanupNonIndian() {
+    setCleanupRunning(true);
+    setCleanupMsg(null);
+    try {
+      const result = await api.removeNonIndianInstruments();
+      const parts = [];
+      parts.push(result.removed.length > 0 ? `Removed: ${result.removed.join(", ")}.` : "Nothing to remove.");
+      if (result.kept.length > 0) parts.push(`Left alone (still held somewhere): ${result.kept.join(", ")}.`);
+      setCleanupMsg(parts.join(" "));
+    } catch (e) {
+      setCleanupMsg(String(e));
+    } finally {
+      setCleanupRunning(false);
+    }
+  }
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
@@ -185,11 +267,89 @@ export function SettingsScreen({
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
-        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Data sources</p>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Data sources — priority order</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Yahoo Finance stays primary — this key is only ever used as a fallback when a Yahoo
-          request fails. Live-verified for India (BSE), US, and UK. Stored locally in your own
-          database only; never committed to GitHub, never synced anywhere.
+          Tried top to bottom — the next source is only ever used when the one above it fails.
+          Reorder with the arrows. Green means a real test call just succeeded, not just that a
+          key is saved.
+        </p>
+        {priorityOrder.map((provider, i) => (
+          <div key={provider} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: i < priorityOrder.length - 1 ? `1px solid ${colors.border}` : undefined }}>
+            <span style={{ fontSize: 12, color: colors.textMuted, width: 16 }}>{i + 1}.</span>
+            <span style={{ fontSize: 13, fontWeight: 600, textTransform: "capitalize", width: 110 }}>
+              {provider === "alpha_vantage" ? "Alpha Vantage" : provider}
+            </span>
+            <ConnectionIndicator onTest={() => api.testMarketDataConnection(provider)} />
+            <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+              <button onClick={() => moveProviderPriority(i, -1)} disabled={i === 0} style={{ fontSize: 11, padding: "2px 8px" }}>
+                ↑
+              </button>
+              <button
+                onClick={() => moveProviderPriority(i, 1)}
+                disabled={i === priorityOrder.length - 1}
+                style={{ fontSize: 11, padding: "2px 8px" }}
+              >
+                ↓
+              </button>
+            </span>
+          </div>
+        ))}
+        {priorityMsg && <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 8 }}>{priorityMsg}</p>}
+      </div>
+
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Upstox</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px" }}>
+          Needs an actual Upstox trading account. Generate a free Analytics Token (valid 1 year, no
+          daily re-login) from Upstox's Developer Apps page, Analytics tab. India (NSE/BSE) only —
+          also powers real Fundamentals and News once connected.
+        </p>
+        <p style={{ fontSize: 12, margin: "0 0 8px" }}>
+          Analytics Token:{" "}
+          {upstoxTokenSaved === null ? "checking…" : upstoxTokenSaved ? (
+            <span style={{ color: colors.success, fontWeight: 600 }}>saved</span>
+          ) : (
+            <span style={{ color: colors.textMuted }}>not set</span>
+          )}
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <input
+            type="password"
+            value={upstoxTokenInput}
+            onChange={(e) => setUpstoxTokenInput(e.target.value)}
+            placeholder={upstoxTokenSaved ? "Enter a new token to replace it" : "Paste your Upstox Analytics Token"}
+            style={{ width: 260 }}
+          />
+          <button onClick={handleSaveUpstoxToken} disabled={!upstoxTokenInput.trim()}>
+            Save
+          </button>
+        </div>
+        {upstoxSaveMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>{upstoxSaveMsg}</p>}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button onClick={handleRefreshUpstoxInstruments} disabled={upstoxRefreshing || !upstoxTokenSaved}>
+            {upstoxRefreshing ? "Refreshing…" : "Refresh Instrument List"}
+          </button>
+          <span style={{ fontSize: 11, color: colors.textMuted }}>
+            Required once before Upstox can resolve any symbol.
+          </span>
+        </div>
+        {upstoxRefreshMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{upstoxRefreshMsg}</p>}
+      </div>
+
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Yahoo Finance</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px" }}>
+          No account or key needed — the original, unofficial-endpoint source this app started
+          with.
+        </p>
+        <ConnectionIndicator onTest={() => api.testMarketDataConnection("yahoo")} />
+      </div>
+
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Alpha Vantage</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
+          Live-verified for India (BSE), US, and UK. Stored locally in your own database only;
+          never committed to GitHub, never synced anywhere.
         </p>
         <p style={{ fontSize: 12, margin: "0 0 8px" }}>
           Alpha Vantage key:{" "}
@@ -199,7 +359,7 @@ export function SettingsScreen({
             <span style={{ color: colors.textMuted }}>not set</span>
           )}
         </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
           <input
             type="password"
             value={avKeyInput}
@@ -211,7 +371,8 @@ export function SettingsScreen({
             Save
           </button>
         </div>
-        {avSaveMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{avSaveMsg}</p>}
+        {avSaveMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>{avSaveMsg}</p>}
+        <ConnectionIndicator onTest={() => api.testMarketDataConnection("alpha_vantage")} />
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
@@ -258,7 +419,8 @@ export function SettingsScreen({
                 Save model
               </button>
             </div>
-            {aiSaveMsg[provider] && <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>{aiSaveMsg[provider]}</p>}
+            {aiSaveMsg[provider] && <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 6, marginBottom: 6 }}>{aiSaveMsg[provider]}</p>}
+            <ConnectionIndicator onTest={() => api.testAiProviderConnection(provider)} />
           </div>
         ))}
         <p style={{ fontSize: 11, color: colors.textMuted, margin: 0 }}>
@@ -277,6 +439,19 @@ export function SettingsScreen({
           the Rust engine (crates/infrastructure/src/brokers/zerodha.rs) but nothing in the UI
           calls it anymore.
         </p>
+      </div>
+
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Clean up non-Indian tickers</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
+          Removes any tracked ticker not on NSE/BSE — leftovers from before the country/market
+          selector was removed. Anything still genuinely held in a portfolio is left alone and
+          reported separately, never silently deleted.
+        </p>
+        <button onClick={handleCleanupNonIndian} disabled={cleanupRunning}>
+          {cleanupRunning ? "Cleaning up…" : "Remove non-Indian tickers"}
+        </button>
+        {cleanupMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{cleanupMsg}</p>}
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>

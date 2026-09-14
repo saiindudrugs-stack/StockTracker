@@ -17,6 +17,9 @@ pub mod yahoo_fundamentals_news;
 pub mod alpha_vantage;
 pub mod amfi;
 pub mod composite;
+pub mod upstox;
+pub mod upstox_fundamentals;
+pub mod prioritized;
 
 use async_trait::async_trait;
 use pm_domain::analytics::DailyBar;

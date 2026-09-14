@@ -86,7 +86,7 @@ const REGULATORY_KEYWORDS: &[&str] = &[
     "regulatory filing",
 ];
 
-fn looks_regulatory(title: &str) -> bool {
+pub fn looks_regulatory(title: &str) -> bool {
     let lower = title.to_lowercase();
     REGULATORY_KEYWORDS.iter().any(|kw| lower.contains(kw))
 }
