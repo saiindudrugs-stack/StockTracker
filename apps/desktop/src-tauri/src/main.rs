@@ -1757,6 +1757,72 @@ async fn get_font_scale(state: State<'_, AppState>) -> Result<f64, String> {
 
 const TARGET_ALLOCATION_SETTING: &str = "target_sector_allocation_json";
 
+const ZERODHA_API_KEY_SETTING: &str = "zerodha_api_key";
+const ZERODHA_API_SECRET_SETTING: &str = "zerodha_api_secret";
+const ZERODHA_ACCESS_TOKEN_SETTING: &str = "zerodha_access_token";
+const ZERODHA_ACCESS_TOKEN_DATE_SETTING: &str = "zerodha_access_token_date";
+/// Must match the Redirect URL registered on the Kite Connect developer
+/// console for this app — the port the local listener binds to for the
+/// duration of one login attempt only (see kite_auth.rs's module doc
+/// comment for the exact lifecycle guarantee).
+const ZERODHA_REDIRECT_PORT: u16 = 17872;
+
+#[tauri::command]
+async fn save_zerodha_credentials(state: State<'_, AppState>, api_key: String, api_secret: String) -> Result<(), String> {
+    state.app_settings.set(ZERODHA_API_KEY_SETTING, api_key.trim()).await.map_err(|e| e.to_string())?;
+    state.app_settings.set(ZERODHA_API_SECRET_SETTING, api_secret.trim()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn has_zerodha_credentials(state: State<'_, AppState>) -> Result<bool, String> {
+    let key = state.app_settings.get(ZERODHA_API_KEY_SETTING).await.map_err(|e| e.to_string())?;
+    let secret = state.app_settings.get(ZERODHA_API_SECRET_SETTING).await.map_err(|e| e.to_string())?;
+    Ok(key.filter(|k| !k.trim().is_empty()).is_some() && secret.filter(|s| !s.trim().is_empty()).is_some())
+}
+
+/// Whether TODAY's access_token is still valid — Kite tokens expire at
+/// the end of each trading day, so yesterday's stored token (even if
+/// technically still present in Settings) is not usable.
+#[tauri::command]
+async fn has_valid_zerodha_session(state: State<'_, AppState>) -> Result<bool, String> {
+    let token = state.app_settings.get(ZERODHA_ACCESS_TOKEN_SETTING).await.map_err(|e| e.to_string())?;
+    let stored_date = state.app_settings.get(ZERODHA_ACCESS_TOKEN_DATE_SETTING).await.map_err(|e| e.to_string())?;
+    Ok(token.filter(|t| !t.trim().is_empty()).is_some() && stored_date.as_deref() == Some(&ist_today().to_string()))
+}
+
+/// The actual opt-in action — only ever runs when the user clicks
+/// "Connect Zerodha" in Settings. Opens the system browser, waits (with
+/// a bounded timeout) for the login redirect via a local listener that
+/// exists only for the duration of this one call, exchanges the token,
+/// and stores today's access_token. Nothing here runs unless this
+/// command is explicitly invoked.
+#[tauri::command]
+async fn connect_zerodha(state: State<'_, AppState>) -> Result<String, String> {
+    let api_key = state
+        .app_settings
+        .get(ZERODHA_API_KEY_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| "no Zerodha API key configured in Settings".to_string())?;
+    let api_secret = state
+        .app_settings
+        .get(ZERODHA_API_SECRET_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "no Zerodha API secret configured in Settings".to_string())?;
+
+    let result = pm_infrastructure::live_feed::login_via_local_redirect_listener(&api_key, &api_secret, ZERODHA_REDIRECT_PORT)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    state.app_settings.set(ZERODHA_ACCESS_TOKEN_SETTING, &result.access_token).await.map_err(|e| e.to_string())?;
+    state.app_settings.set(ZERODHA_ACCESS_TOKEN_DATE_SETTING, &ist_today().to_string()).await.map_err(|e| e.to_string())?;
+
+    Ok(format!("Connected as {}", result.user_id))
+}
+
 /// Stored as a raw JSON object string (e.g. {"Energy": 30, "IT": 20}) —
 /// deliberately not a typed Rust struct, since this is just a sector-name
 /// -> target-percentage map the frontend already builds from the same
@@ -2873,6 +2939,10 @@ fn main() {
             test_ai_provider_connection,
             start_live_price_stream,
             stop_live_price_stream,
+            save_zerodha_credentials,
+            has_zerodha_credentials,
+            has_valid_zerodha_session,
+            connect_zerodha,
             save_ai_provider_key,
             has_ai_provider_key,
             save_ai_provider_model,

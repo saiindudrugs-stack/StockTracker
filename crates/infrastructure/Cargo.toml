@@ -21,6 +21,7 @@ flate2 = "1"
 indexmap = "=2.2.6"
 idna_adapter = "=1.1.0"
 prost = "0.12"
+open = "5"
 
 [build-dependencies]
 prost-build = "0.12"

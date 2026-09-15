@@ -236,6 +236,45 @@ export function SettingsScreen({
     }
   }
 
+  const [zerodhaApiKeyInput, setZerodhaApiKeyInput] = useState("");
+  const [zerodhaApiSecretInput, setZerodhaApiSecretInput] = useState("");
+  const [zerodhaCredsSaved, setZerodhaCredsSaved] = useState<boolean | null>(null);
+  const [zerodhaSessionValid, setZerodhaSessionValid] = useState<boolean | null>(null);
+  const [zerodhaConnecting, setZerodhaConnecting] = useState(false);
+  const [zerodhaMsg, setZerodhaMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.hasZerodhaCredentials().then(setZerodhaCredsSaved).catch(() => setZerodhaCredsSaved(false));
+    api.hasValidZerodhaSession().then(setZerodhaSessionValid).catch(() => setZerodhaSessionValid(false));
+  }, []);
+
+  async function handleSaveZerodhaCredentials() {
+    if (!zerodhaApiKeyInput.trim() || !zerodhaApiSecretInput.trim()) return;
+    try {
+      await api.saveZerodhaCredentials(zerodhaApiKeyInput.trim(), zerodhaApiSecretInput.trim());
+      setZerodhaCredsSaved(true);
+      setZerodhaApiKeyInput("");
+      setZerodhaApiSecretInput("");
+      setZerodhaMsg("Saved.");
+    } catch (e) {
+      setZerodhaMsg(String(e));
+    }
+  }
+
+  async function handleConnectZerodha() {
+    setZerodhaConnecting(true);
+    setZerodhaMsg(null);
+    try {
+      const result = await api.connectZerodha();
+      setZerodhaSessionValid(true);
+      setZerodhaMsg(result);
+    } catch (e) {
+      setZerodhaMsg(String(e));
+    } finally {
+      setZerodhaConnecting(false);
+    }
+  }
+
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
 
@@ -546,6 +585,53 @@ export function SettingsScreen({
           ))}
         </div>
         {fontScaleMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{fontScaleMsg}</p>}
+      </div>
+
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Zerodha (Kite Connect)</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px" }}>
+          Needs a Kite Connect subscription (₹500/month) — separate from a normal Zerodha account.
+          Unlike Upstox, there's no year-long token: a fresh login is required every trading day.
+          "Connect Zerodha" opens Zerodha's real login page in your browser; nothing runs locally
+          until you click it, and it stops listening the moment login completes or after 3 minutes.
+        </p>
+        <p style={{ fontSize: 12, margin: "0 0 8px" }}>
+          Credentials:{" "}
+          {zerodhaCredsSaved === null ? "checking…" : zerodhaCredsSaved ? (
+            <span style={{ color: colors.success, fontWeight: 600 }}>saved</span>
+          ) : (
+            <span style={{ color: colors.textMuted }}>not set</span>
+          )}
+          {"  ·  Today's session: "}
+          {zerodhaSessionValid === null ? "checking…" : zerodhaSessionValid ? (
+            <span style={{ color: colors.success, fontWeight: 600 }}>connected</span>
+          ) : (
+            <span style={{ color: colors.textMuted }}>not connected</span>
+          )}
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+          <input
+            type="password"
+            value={zerodhaApiKeyInput}
+            onChange={(e) => setZerodhaApiKeyInput(e.target.value)}
+            placeholder="API key"
+            style={{ width: 160 }}
+          />
+          <input
+            type="password"
+            value={zerodhaApiSecretInput}
+            onChange={(e) => setZerodhaApiSecretInput(e.target.value)}
+            placeholder="API secret"
+            style={{ width: 160 }}
+          />
+          <button onClick={handleSaveZerodhaCredentials} disabled={!zerodhaApiKeyInput.trim() || !zerodhaApiSecretInput.trim()}>
+            Save
+          </button>
+        </div>
+        <button onClick={handleConnectZerodha} disabled={!zerodhaCredsSaved || zerodhaConnecting}>
+          {zerodhaConnecting ? "Waiting for login…" : "Connect Zerodha"}
+        </button>
+        {zerodhaMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{zerodhaMsg}</p>}
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>

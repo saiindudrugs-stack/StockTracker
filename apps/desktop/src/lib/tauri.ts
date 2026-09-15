@@ -168,6 +168,17 @@ export const api = {
   // separately (see subscribeLivePriceTicks below).
   startLivePriceStream: (symbols: string[]) => invoke<number>("start_live_price_stream", { symbols }),
   stopLivePriceStream: () => invoke<void>("stop_live_price_stream"),
+
+  // Zerodha — a real daily OAuth flow, not a long-lived token like
+  // Upstox. connectZerodha() opens the system browser and waits for the
+  // login redirect via a listener scoped to that one call only (see the
+  // Rust module doc comment on kite_auth.rs for the exact lifecycle
+  // guarantee — it never runs unless this is called, and never outlives
+  // the call).
+  saveZerodhaCredentials: (apiKey: string, apiSecret: string) => invoke<void>("save_zerodha_credentials", { apiKey, apiSecret }),
+  hasZerodhaCredentials: () => invoke<boolean>("has_zerodha_credentials"),
+  hasValidZerodhaSession: () => invoke<boolean>("has_valid_zerodha_session"),
+  connectZerodha: () => invoke<string>("connect_zerodha"),
   testAiProviderConnection: (provider: string) => invoke<string>("test_ai_provider_connection", { provider }),
 
   // AI portfolio insights — anthropic/openai/gemini, whichever the user
