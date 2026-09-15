@@ -64,17 +64,37 @@ impl UpstoxProvider {
             let rows: Vec<RawInstrumentRow> = serde_json::from_str(&json_text)
                 .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't parse {exchange} instrument file: {e}")))?;
 
-            for row in rows {
+            let total_rows = rows.len();
+            let mut kept_for_exchange = 0usize;
+            for row in &rows {
                 if row.instrument_type.as_deref() != Some("EQ") {
                     continue;
                 }
-                let Some(symbol) = row.trading_symbol else { continue };
+                let Some(symbol) = row.trading_symbol.clone() else { continue };
                 all_rows.push(UpstoxInstrumentRow {
                     trading_symbol: symbol,
                     exchange: exchange.to_string(),
-                    instrument_key: row.instrument_key,
-                    isin: row.isin,
+                    instrument_key: row.instrument_key.clone(),
+                    isin: row.isin.clone(),
                 });
+                kept_for_exchange += 1;
+            }
+
+            // Real file, real rows, but the "EQ" filter matched nothing —
+            // that's a red flag the filter itself is wrong (a field name
+            // or value assumption that's since drifted), not that this
+            // exchange genuinely has zero equities. Failing loudly here
+            // with the actual instrument_type values seen turns the next
+            // report into a direct fix instead of the same "not found in
+            // cache" symptom recurring with no new information.
+            if total_rows > 0 && kept_for_exchange == 0 {
+                let mut sample_types: Vec<String> = rows.iter().filter_map(|r| r.instrument_type.clone()).collect();
+                sample_types.sort();
+                sample_types.dedup();
+                sample_types.truncate(10);
+                return Err(MarketDataError::UnexpectedResponse(format!(
+                    "{exchange} instrument file parsed {total_rows} rows but none matched instrument_type \"EQ\" — the actual values seen were: {sample_types:?}"
+                )));
             }
         }
 
