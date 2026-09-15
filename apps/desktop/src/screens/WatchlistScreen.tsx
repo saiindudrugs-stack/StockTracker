@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../lib/tauri";
+import { api, subscribeLivePriceTicks } from "../lib/tauri";
 import type { InstrumentView, MarketSnapshotView, TechnicalAnalysisView } from "../lib/types";
 import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, currencySymbolForExchange } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
@@ -42,6 +42,46 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
   }, []);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
+
+  const [liveStreaming, setLiveStreaming] = useState(false);
+  const [liveStreamMsg, setLiveStreamMsg] = useState<string | null>(null);
+
+  // Subscribes to ticks only while actually streaming — unsubscribes
+  // immediately when toggled off or when leaving this screen, so a
+  // background tick from a stream the user stopped doesn't quietly patch
+  // a row that's no longer meant to be live.
+  useEffect(() => {
+    if (!liveStreaming) return;
+    const unsubscribe = subscribeLivePriceTicks((tick) => {
+      setRows((prev) => {
+        const existing = prev[tick.symbol];
+        if (!existing?.snapshot) return prev;
+        const prevClose = existing.snapshot.previous_close ? parseFloat(existing.snapshot.previous_close) : null;
+        const dayChangePct = prevClose && prevClose > 0 ? (tick.price - prevClose) / prevClose : existing.snapshot.day_change_pct;
+        return {
+          ...prev,
+          [tick.symbol]: { ...existing, snapshot: { ...existing.snapshot, price: tick.price.toString(), day_change_pct: dayChangePct } },
+        };
+      });
+    });
+    return unsubscribe;
+  }, [liveStreaming]);
+
+  async function handleToggleLiveStreaming() {
+    if (liveStreaming) {
+      await api.stopLivePriceStream();
+      setLiveStreaming(false);
+      setLiveStreamMsg(null);
+      return;
+    }
+    try {
+      const resolvedCount = await api.startLivePriceStream(instruments.map((i) => i.symbol));
+      setLiveStreaming(true);
+      setLiveStreamMsg(`Streaming ${resolvedCount} of ${instruments.length} symbols live (Upstox).`);
+    } catch (e) {
+      setLiveStreamMsg(String(e));
+    }
+  }
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasAutoPopulatedRef = useRef(false);
 
@@ -288,7 +328,18 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
           <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
           Auto-refresh every 30s
         </label>
+        <button
+          onClick={handleToggleLiveStreaming}
+          style={{
+            fontSize: 12,
+            color: liveStreaming ? colors.success : undefined,
+            fontWeight: liveStreaming ? 600 : 400,
+          }}
+        >
+          {liveStreaming ? "● Live (Upstox) — Stop" : "Start Live Streaming (Upstox)"}
+        </button>
       </div>
+      {liveStreamMsg && <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 0, marginBottom: 8 }}>{liveStreamMsg}</p>}
       <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 0, marginBottom: 12 }}>
         Quotes pull from an unofficial Yahoo Finance endpoint — free, but unsupported and could
         break or get rate-limited, especially with auto-refresh on. "Analyze" pulls a full year of

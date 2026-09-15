@@ -28,6 +28,7 @@ use pm_infrastructure::ai_insights::{
     DEFAULT_ANTHROPIC_MODEL, DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_MODEL, GEMINI_API_KEY_SETTING,
     GEMINI_MODEL_SETTING, OPENAI_API_KEY_SETTING, OPENAI_MODEL_SETTING,
 };
+use pm_infrastructure::live_feed::UpstoxLiveFeedClient;
 use pm_infrastructure::market_data::{
     alpha_vantage::{AlphaVantageProvider, ALPHA_VANTAGE_API_KEY_SETTING},
     amfi::{AmfiProvider, MutualFundDataSource},
@@ -47,7 +48,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::str::FromStr;
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
 struct AppState {
@@ -77,6 +78,12 @@ struct AppState {
     mf_data_source: Arc<AmfiProvider>,
     app_settings: Arc<SqliteAppSettings>,
     ai_insights: Arc<AiInsightsClient>,
+    /// Holds the currently-running live-feed background task, if any —
+    /// Mutex'd since start/stop can race (double-click, rapid toggling)
+    /// and there should only ever be one active stream at a time. None
+    /// means no live feed is currently running (REST polling is what's
+    /// actually happening in that case, same as before this feature).
+    live_feed_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 #[derive(Serialize)]
@@ -1722,6 +1729,32 @@ async fn get_flash_threshold(state: State<'_, AppState>) -> Result<f64, String> 
         .unwrap_or(DEFAULT_FLASH_THRESHOLD_PCT))
 }
 
+const FONT_SCALE_SETTING: &str = "font_scale_pct";
+const DEFAULT_FONT_SCALE_PCT: f64 = 100.0;
+
+/// The whole app uses hardcoded pixel values in inline styles rather than
+/// rem units (a much bigger refactor to change now), so this scales via
+/// CSS `zoom` on the root container instead of a real font-size system —
+/// works reliably in Tauri's WKWebView on macOS, scales everything
+/// (fonts, spacing, layout) proportionally with zero changes to any
+/// individual component.
+#[tauri::command]
+async fn save_font_scale(state: State<'_, AppState>, scale_pct: f64) -> Result<(), String> {
+    state.app_settings.set(FONT_SCALE_SETTING, &scale_pct.to_string()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_font_scale(state: State<'_, AppState>) -> Result<f64, String> {
+    Ok(state
+        .app_settings
+        .get(FONT_SCALE_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| *v >= 50.0 && *v <= 200.0)
+        .unwrap_or(DEFAULT_FONT_SCALE_PCT))
+}
+
 const TARGET_ALLOCATION_SETTING: &str = "target_sector_allocation_json";
 
 /// Stored as a raw JSON object string (e.g. {"Energy": 30, "IT": 20}) —
@@ -1794,6 +1827,75 @@ async fn test_ai_provider_connection(state: State<'_, AppState>, provider: Strin
         .await
         .map(|_| "Connected".to_string())
         .map_err(|e| e.to_string())
+}
+
+#[derive(Clone, Serialize)]
+struct LivePriceTickEvent {
+    symbol: String,
+    price: f64,
+}
+
+/// Opt-in, explicit start — nothing runs until this is called, matching
+/// "leave it as an option to the user." Resolves each symbol's Upstox
+/// instrument_key up front (needs the instrument cache refreshed, same
+/// prerequisite as everything else Upstox in this app), then runs the
+/// WebSocket stream in a background task, emitting a `live-price-tick`
+/// event per update for the frontend to pick up. Any previously-running
+/// stream is stopped first — only one active at a time.
+#[tauri::command]
+async fn start_live_price_stream(state: State<'_, AppState>, app: tauri::AppHandle, symbols: Vec<String>) -> Result<usize, String> {
+    let instruments = state.instruments.list_all().await.map_err(|e| e.to_string())?;
+    let mut instrument_keys = Vec::new();
+    let mut key_to_symbol = std::collections::HashMap::new();
+
+    for symbol in &symbols {
+        let Some(instrument) = instruments.iter().find(|i| &i.symbol == symbol) else { continue };
+        if let Ok(Some(key)) = state.upstox_instruments.get_instrument_key(&instrument.symbol, &instrument.exchange).await {
+            key_to_symbol.insert(key.clone(), instrument.symbol.clone());
+            instrument_keys.push(key);
+        }
+    }
+
+    if instrument_keys.is_empty() {
+        return Err("none of these symbols have a cached Upstox instrument_key — refresh the instrument list in Settings first".to_string());
+    }
+
+    let resolved_count = instrument_keys.len();
+    let client = UpstoxLiveFeedClient::new(state.app_settings.clone());
+
+    // Stop any existing stream before starting a new one — see the
+    // AppState field doc comment on why only one runs at a time.
+    let mut task_guard = state.live_feed_task.lock().await;
+    if let Some(handle) = task_guard.take() {
+        handle.abort();
+    }
+
+    let handle = tokio::spawn(async move {
+        let _ = client
+            .stream(instrument_keys, move |raw_tick| {
+                if let Some(symbol) = key_to_symbol.get(&raw_tick.instrument_key) {
+                    let _ = app.emit("live-price-tick", LivePriceTickEvent { symbol: symbol.clone(), price: raw_tick.ltp });
+                }
+            })
+            .await;
+        // A stream ending (error or connection closed) just means no more
+        // ticks arrive — the frontend's toggle state is what reflects
+        // "should be streaming," not this task's own lifetime, so no
+        // event is emitted here for it ending; a Retest / Start click
+        // reflects the actual state honestly either way.
+    });
+    *task_guard = Some(handle);
+
+    Ok(resolved_count)
+}
+
+#[tauri::command]
+async fn stop_live_price_stream(state: State<'_, AppState>) -> Result<(), String> {
+    let mut task_guard = state.live_feed_task.lock().await;
+    if let Some(handle) = task_guard.take() {
+        handle.abort();
+    }
+    Ok(())
 }
 
 /// Maps a provider name to its (key setting, model setting, default model)
@@ -2710,6 +2812,7 @@ fn main() {
                 mf_data_source: Arc::new(AmfiProvider::new()),
                 app_settings: app_settings_repo,
                 ai_insights: Arc::new(AiInsightsClient::new()),
+                live_feed_task: Arc::new(tokio::sync::Mutex::new(None)),
             };
 
             tauri::async_runtime::block_on(seed_demo_data_if_first_launch(&state))
@@ -2762,10 +2865,14 @@ fn main() {
             get_market_data_priority,
             save_flash_threshold,
             get_flash_threshold,
+            save_font_scale,
+            get_font_scale,
             save_target_allocation,
             get_target_allocation,
             test_market_data_connection,
             test_ai_provider_connection,
+            start_live_price_stream,
+            stop_live_price_stream,
             save_ai_provider_key,
             has_ai_provider_key,
             save_ai_provider_model,

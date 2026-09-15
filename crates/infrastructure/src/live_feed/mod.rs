@@ -15,8 +15,10 @@ pub mod aggregator;
 pub mod reconnect;
 pub mod transport;
 pub mod manager;
+pub mod upstox_ws;
 
 pub use aggregator::{MinuteBar, MinuteBarAggregator};
 pub use reconnect::ReconnectPolicy;
 pub use transport::{TickTransport, WebSocketTransport};
 pub use manager::{LiveFeedManager, PriceTick};
+pub use upstox_ws::{RawUpstoxTick, UpstoxLiveFeedClient};

@@ -191,6 +191,30 @@ export function SettingsScreen({
   const [flashThresholdInput, setFlashThresholdInput] = useState("");
   const [flashThresholdMsg, setFlashThresholdMsg] = useState<string | null>(null);
 
+  const [fontScale, setFontScale] = useState(100);
+  const [fontScaleMsg, setFontScaleMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .getFontScale()
+      .then(setFontScale)
+      .catch(() => {});
+  }, []);
+
+  async function handleSaveFontScale(pct: number) {
+    // Applied immediately, not just on next launch — document.body isn't
+    // part of React's managed tree, so setting it directly here doesn't
+    // conflict with anything React itself renders.
+    document.body.style.zoom = `${pct}%`;
+    setFontScale(pct);
+    try {
+      await api.saveFontScale(pct);
+      setFontScaleMsg(`Set to ${pct}%.`);
+    } catch (e) {
+      setFontScaleMsg(String(e));
+    }
+  }
+
   useEffect(() => {
     api
       .getFlashThreshold()
@@ -499,6 +523,29 @@ export function SettingsScreen({
           </button>
         </div>
         {flashThresholdMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{flashThresholdMsg}</p>}
+
+        <p style={{ fontSize: 12, fontWeight: 600, margin: "16px 0 8px" }}>App text size</p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {[85, 100, 115, 130, 150].map((pct) => (
+            <button
+              key={pct}
+              onClick={() => handleSaveFontScale(pct)}
+              style={{
+                fontSize: 12,
+                padding: "4px 10px",
+                borderRadius: 6,
+                border: `1px solid ${fontScale === pct ? colors.accent : colors.border}`,
+                background: fontScale === pct ? "#E6F1FB" : "transparent",
+                color: fontScale === pct ? colors.accent : colors.textMuted,
+                fontWeight: fontScale === pct ? 600 : 400,
+                cursor: "pointer",
+              }}
+            >
+              {pct}%
+            </button>
+          ))}
+        </div>
+        {fontScaleMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{fontScaleMsg}</p>}
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>

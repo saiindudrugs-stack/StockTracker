@@ -19,6 +19,15 @@ export default function App() {
   const [portfolios, setPortfolios] = useState<PortfolioView[]>([]);
   const [activePortfolioId, setActivePortfolioId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .getFontScale()
+      .then((pct) => {
+        document.body.style.zoom = `${pct}%`;
+      })
+      .catch(() => {});
+  }, []);
   // India only, hardcoded — the country selector (US/UK support) was
   // removed after real bugs surfaced and it was adding untested surface
   // area with no clear benefit yet. The underlying multi-market code
@@ -82,7 +91,14 @@ export default function App() {
   const needsPortfolio = screen === "dashboard" || screen === "holdings" || screen === "analysis" || screen === "mutual-funds";
 
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", display: "flex", flexDirection: "column", height: "100vh" }}>
+    <div
+      style={{
+        fontFamily: "system-ui, sans-serif",
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+      }}
+    >
       {/* Global keyframes for alert animations — a plain <style> tag since
           this app has no CSS module/stylesheet setup, everything else is
           inline styles.

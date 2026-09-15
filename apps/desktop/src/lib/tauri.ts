@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
   AlertRuleView,
   CandleView,
@@ -150,11 +151,23 @@ export const api = {
   saveFlashThreshold: (thresholdPct: number) => invoke<void>("save_flash_threshold", { thresholdPct }),
   getFlashThreshold: () => invoke<number>("get_flash_threshold"),
 
+  saveFontScale: (scalePct: number) => invoke<void>("save_font_scale", { scalePct }),
+  getFontScale: () => invoke<number>("get_font_scale"),
+
   // Real connection tests — a saved key proves nothing about whether it's
   // actually valid, so these make one small live call per source rather
   // than just checking "is something saved." Explicit only (a button
   // click), never automatic.
   testMarketDataConnection: (provider: string) => invoke<string>("test_market_data_connection", { provider }),
+
+  // Live streaming — opt-in, explicit start/stop. Resolves each symbol's
+  // Upstox instrument_key (needs the instrument cache refreshed first)
+  // and returns how many actually resolved, so the caller can tell the
+  // user if some symbols were skipped. Ticks arrive via the
+  // "live-price-tick" window event, not a return value — listen for that
+  // separately (see subscribeLivePriceTicks below).
+  startLivePriceStream: (symbols: string[]) => invoke<number>("start_live_price_stream", { symbols }),
+  stopLivePriceStream: () => invoke<void>("stop_live_price_stream"),
   testAiProviderConnection: (provider: string) => invoke<string>("test_ai_provider_connection", { provider }),
 
   // AI portfolio insights — anthropic/openai/gemini, whichever the user
@@ -174,3 +187,29 @@ export const api = {
   getFundamentals: (symbol: string) => invoke<FundamentalsView>("get_fundamentals", { symbol }),
   getStockNews: (symbol: string) => invoke<NewsItemView[]>("get_stock_news", { symbol }),
 };
+
+export interface LivePriceTick {
+  symbol: string;
+  price: number;
+}
+
+/// Subscribes to the "live-price-tick" backend event (emitted once per
+/// tick while a stream started via api.startLivePriceStream is running).
+/// Returns an unsubscribe function — call it on unmount, same pattern as
+/// a plain useEffect cleanup, so a screen navigated away from doesn't
+/// keep reacting to ticks after it's gone.
+export function subscribeLivePriceTicks(onTick: (tick: LivePriceTick) => void): () => void {
+  let unlisten: (() => void) | null = null;
+  let cancelled = false;
+  listen<LivePriceTick>("live-price-tick", (event) => onTick(event.payload)).then((fn) => {
+    if (cancelled) {
+      fn();
+    } else {
+      unlisten = fn;
+    }
+  });
+  return () => {
+    cancelled = true;
+    if (unlisten) unlisten();
+  };
+}

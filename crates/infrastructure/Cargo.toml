@@ -20,6 +20,11 @@ reqwest = { version = "0.11", default-features = false, features = ["json", "rus
 flate2 = "1"
 indexmap = "=2.2.6"
 idna_adapter = "=1.1.0"
+prost = "0.12"
+
+[build-dependencies]
+prost-build = "0.12"
+protoc-bin-vendored = "3"
 
 [dev-dependencies]
 rust_decimal_macros = "1"
