@@ -17,10 +17,14 @@ pub mod transport;
 pub mod manager;
 pub mod upstox_ws;
 pub mod kite_auth;
+pub mod kite_tick_decoder;
+pub mod kite_instruments;
 
 pub use aggregator::{MinuteBar, MinuteBarAggregator};
 pub use reconnect::ReconnectPolicy;
 pub use transport::{TickTransport, WebSocketTransport};
-pub use manager::{LiveFeedManager, PriceTick};
+pub use manager::{FeedEvent, LiveFeedManager, PriceTick, TickDecoder};
 pub use upstox_ws::{RawUpstoxTick, UpstoxLiveFeedClient};
 pub use kite_auth::{login_via_local_redirect_listener, KiteAuthError, KiteLoginResult};
+pub use kite_tick_decoder::KiteTickDecoder;
+pub use kite_instruments::{KiteInstrumentFetcher, KiteInstrumentRow};

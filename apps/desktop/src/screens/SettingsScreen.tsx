@@ -275,6 +275,22 @@ export function SettingsScreen({
     }
   }
 
+  const [kiteRefreshing, setKiteRefreshing] = useState(false);
+  const [kiteRefreshMsg, setKiteRefreshMsg] = useState<string | null>(null);
+
+  async function handleRefreshKiteInstruments() {
+    setKiteRefreshing(true);
+    setKiteRefreshMsg(null);
+    try {
+      const result = await api.refreshKiteInstrumentCache();
+      setKiteRefreshMsg(`Cached ${result.instrument_count.toLocaleString()} NSE + BSE equity instruments.`);
+    } catch (e) {
+      setKiteRefreshMsg(String(e));
+    } finally {
+      setKiteRefreshing(false);
+    }
+  }
+
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
 
@@ -630,8 +646,12 @@ export function SettingsScreen({
         </div>
         <button onClick={handleConnectZerodha} disabled={!zerodhaCredsSaved || zerodhaConnecting}>
           {zerodhaConnecting ? "Waiting for login…" : "Connect Zerodha"}
+        </button>{" "}
+        <button onClick={handleRefreshKiteInstruments} disabled={!zerodhaSessionValid || kiteRefreshing}>
+          {kiteRefreshing ? "Refreshing…" : "Refresh Instrument List"}
         </button>
         {zerodhaMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{zerodhaMsg}</p>}
+        {kiteRefreshMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{kiteRefreshMsg}</p>}
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>

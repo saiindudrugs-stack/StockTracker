@@ -179,6 +179,8 @@ export const api = {
   hasZerodhaCredentials: () => invoke<boolean>("has_zerodha_credentials"),
   hasValidZerodhaSession: () => invoke<boolean>("has_valid_zerodha_session"),
   connectZerodha: () => invoke<string>("connect_zerodha"),
+  refreshKiteInstrumentCache: () => invoke<{ instrument_count: number }>("refresh_kite_instrument_cache"),
+  startZerodhaLiveStream: (symbols: string[]) => invoke<number>("start_zerodha_live_stream", { symbols }),
   testAiProviderConnection: (provider: string) => invoke<string>("test_ai_provider_connection", { provider }),
 
   // AI portfolio insights — anthropic/openai/gemini, whichever the user

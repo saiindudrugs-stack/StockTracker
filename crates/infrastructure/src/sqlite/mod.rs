@@ -20,6 +20,7 @@ pub mod portfolio_repository;
 pub mod price_repository;
 pub mod transaction_repository;
 pub mod upstox_instrument_cache;
+pub mod kite_instrument_cache;
 
 pub use alert_rule_repository::SqliteAlertRuleRepository;
 pub use app_settings::SqliteAppSettings;
@@ -30,6 +31,7 @@ pub use portfolio_repository::SqlitePortfolioRepository;
 pub use price_repository::SqlitePriceRepository;
 pub use transaction_repository::SqliteTransactionRepository;
 pub use upstox_instrument_cache::{SqliteUpstoxInstrumentCache, UpstoxInstrumentRow};
+pub use kite_instrument_cache::SqliteKiteInstrumentCache;
 
 /// Shared handle to the connection. `rusqlite::Connection` isn't `Sync`, so
 /// every repository wraps blocking calls in `spawn_blocking` against a clone
@@ -231,6 +233,17 @@ CREATE TABLE IF NOT EXISTS upstox_instrument_cache (
     exchange TEXT NOT NULL,
     instrument_key TEXT NOT NULL,
     isin TEXT,
+    PRIMARY KEY (trading_symbol, exchange)
+);
+
+-- Same disposable, wholesale-replaced pattern as upstox_instrument_cache
+-- — Kite identifies instruments by a numeric instrument_token (not a
+-- string key like Upstox), fetched from Kite's own public instruments
+-- CSV dump, refreshed once a day per their own recommendation.
+CREATE TABLE IF NOT EXISTS kite_instrument_cache (
+    trading_symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    instrument_token INTEGER NOT NULL,
     PRIMARY KEY (trading_symbol, exchange)
 );
 "#;

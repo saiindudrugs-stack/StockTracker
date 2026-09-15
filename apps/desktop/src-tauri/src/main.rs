@@ -28,7 +28,9 @@ use pm_infrastructure::ai_insights::{
     DEFAULT_ANTHROPIC_MODEL, DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_MODEL, GEMINI_API_KEY_SETTING,
     GEMINI_MODEL_SETTING, OPENAI_API_KEY_SETTING, OPENAI_MODEL_SETTING,
 };
-use pm_infrastructure::live_feed::UpstoxLiveFeedClient;
+use pm_infrastructure::live_feed::{
+    KiteInstrumentFetcher, KiteTickDecoder, LiveFeedManager, ReconnectPolicy, UpstoxLiveFeedClient, WebSocketTransport,
+};
 use pm_infrastructure::market_data::{
     alpha_vantage::{AlphaVantageProvider, ALPHA_VANTAGE_API_KEY_SETTING},
     amfi::{AmfiProvider, MutualFundDataSource},
@@ -41,7 +43,7 @@ use pm_infrastructure::market_data::{
 use pm_infrastructure::sqlite::{
     SqliteAlertRuleRepository, SqliteAppSettings, SqliteHoldingRepository, SqliteInstrumentRepository,
     SqliteMfSchemeCache, SqlitePool, SqlitePortfolioRepository, SqlitePriceRepository, SqliteTransactionRepository,
-    SqliteUpstoxInstrumentCache,
+    SqliteUpstoxInstrumentCache, SqliteKiteInstrumentCache,
 };
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -84,6 +86,7 @@ struct AppState {
     /// means no live feed is currently running (REST polling is what's
     /// actually happening in that case, same as before this feature).
     live_feed_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    kite_instruments: Arc<SqliteKiteInstrumentCache>,
 }
 
 #[derive(Serialize)]
@@ -1964,6 +1967,112 @@ async fn stop_live_price_stream(state: State<'_, AppState>) -> Result<(), String
     Ok(())
 }
 
+/// Manual, user-triggered — downloads and caches Kite's NSE + BSE equity
+/// instrument lists. Requires today's Zerodha session to already be
+/// valid (this call itself needs an access_token, same as Kite's other
+/// endpoints), same prerequisite ordering as everything else Zerodha in
+/// this app: connect first, then refresh instruments, then stream.
+#[tauri::command]
+async fn refresh_kite_instrument_cache(state: State<'_, AppState>) -> Result<UpstoxRefreshResult, String> {
+    let api_key = state
+        .app_settings
+        .get(ZERODHA_API_KEY_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| "no Zerodha API key configured in Settings".to_string())?;
+    let access_token = state
+        .app_settings
+        .get(ZERODHA_ACCESS_TOKEN_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "no valid Zerodha session — click Connect Zerodha first".to_string())?;
+
+    let fetcher = KiteInstrumentFetcher::new();
+    let rows = fetcher.fetch_nse_and_bse(&api_key, &access_token).await.map_err(|e| e.to_string())?;
+    let count = rows.len();
+    let tuples = rows.into_iter().map(|r| (r.trading_symbol, r.exchange, r.instrument_token)).collect();
+    state.kite_instruments.replace_all(tuples).await.map_err(|e| e.to_string())?;
+    Ok(UpstoxRefreshResult { instrument_count: count })
+}
+
+/// Same opt-in, explicit-start reasoning as start_live_price_stream — the
+/// WebSocket connection (and the reconnect loop wrapping it) only exists
+/// from the moment this is called until stop_live_price_stream (or a
+/// fresh start of either broker's stream) is called. Kite's WS URL
+/// itself carries the day's access_token as a query parameter, per their
+/// own documented connect format.
+#[tauri::command]
+async fn start_zerodha_live_stream(state: State<'_, AppState>, app: tauri::AppHandle, symbols: Vec<String>) -> Result<usize, String> {
+    let api_key = state
+        .app_settings
+        .get(ZERODHA_API_KEY_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| "no Zerodha API key configured in Settings".to_string())?;
+    let access_token = state
+        .app_settings
+        .get(ZERODHA_ACCESS_TOKEN_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "no valid Zerodha session — click Connect Zerodha first".to_string())?;
+
+    let instruments = state.instruments.list_all().await.map_err(|e| e.to_string())?;
+    let mut instrument_tokens = Vec::new();
+    let mut token_to_instrument_id = std::collections::HashMap::new();
+
+    for symbol in &symbols {
+        let Some(instrument) = instruments.iter().find(|i| &i.symbol == symbol) else { continue };
+        if let Ok(Some(token)) = state.kite_instruments.get_instrument_token(&instrument.symbol, &instrument.exchange).await {
+            token_to_instrument_id.insert(token, instrument.id);
+            instrument_tokens.push(token);
+        }
+    }
+
+    if instrument_tokens.is_empty() {
+        return Err("none of these symbols have a cached Kite instrument_token — refresh the instrument list in Settings first".to_string());
+    }
+    let resolved_count = instrument_tokens.len();
+
+    // Build a symbol lookup (by Uuid) so ticks can be emitted keyed by
+    // symbol, the same event shape the frontend already listens for from
+    // the Upstox stream — one toggle button, one event name, regardless
+    // of which broker is actually behind it.
+    let id_to_symbol: std::collections::HashMap<uuid::Uuid, String> = instruments.into_iter().map(|i| (i.id, i.symbol)).collect();
+
+    let ws_url = format!("wss://ws.kite.trade?api_key={api_key}&access_token={access_token}");
+    let transport = WebSocketTransport::new(ws_url);
+    let decoder = KiteTickDecoder { token_to_instrument_id };
+    let mut manager = LiveFeedManager::new(transport, decoder, ReconnectPolicy::default_policy());
+    let mut events = manager.subscribe_events();
+
+    let mut task_guard = state.live_feed_task.lock().await;
+    if let Some(handle) = task_guard.take() {
+        handle.abort();
+    }
+
+    let handle = tokio::spawn(async move {
+        let event_forwarder = tokio::spawn(async move {
+            while let Ok(event) = events.recv().await {
+                if let pm_infrastructure::live_feed::FeedEvent::Tick(tick) = event {
+                    if let Some(symbol) = id_to_symbol.get(&tick.instrument_id) {
+                        let price: f64 = tick.ltp.to_string().parse().unwrap_or(0.0);
+                        let _ = app.emit("live-price-tick", LivePriceTickEvent { symbol: symbol.clone(), price });
+                    }
+                }
+            }
+        });
+        manager.run_forever(&instrument_tokens, |d| tokio::time::sleep(d)).await;
+        event_forwarder.abort();
+    });
+    *task_guard = Some(handle);
+
+    Ok(resolved_count)
+}
+
 /// Maps a provider name to its (key setting, model setting, default model)
 /// — the one place that knowledge lives, so the save/has/model/generate
 /// commands below all agree with each other by construction rather than
@@ -2874,6 +2983,7 @@ fn main() {
                 yahoo_direct: Arc::new(YahooFinanceProvider::new()),
                 upstox_fundamentals: Arc::new(UpstoxFundamentalsClient::new()),
                 upstox_instruments: upstox_instruments_repo,
+                kite_instruments: Arc::new(SqliteKiteInstrumentCache::new(pool.clone())),
                 mf_scheme_cache: Arc::new(SqliteMfSchemeCache::new(pool)),
                 mf_data_source: Arc::new(AmfiProvider::new()),
                 app_settings: app_settings_repo,
@@ -2939,6 +3049,8 @@ fn main() {
             test_ai_provider_connection,
             start_live_price_stream,
             stop_live_price_stream,
+            refresh_kite_instrument_cache,
+            start_zerodha_live_stream,
             save_zerodha_credentials,
             has_zerodha_credentials,
             has_valid_zerodha_session,

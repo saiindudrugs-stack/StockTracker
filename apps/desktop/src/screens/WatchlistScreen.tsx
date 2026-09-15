@@ -44,6 +44,7 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
   const [autoRefresh, setAutoRefresh] = useState(false);
 
   const [liveStreaming, setLiveStreaming] = useState(false);
+  const [liveStreamBroker, setLiveStreamBroker] = useState<"upstox" | "zerodha">("upstox");
   const [liveStreamMsg, setLiveStreamMsg] = useState<string | null>(null);
 
   // Subscribes to ticks only while actually streaming — unsubscribes
@@ -75,9 +76,12 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
       return;
     }
     try {
-      const resolvedCount = await api.startLivePriceStream(instruments.map((i) => i.symbol));
+      const resolvedCount =
+        liveStreamBroker === "upstox"
+          ? await api.startLivePriceStream(instruments.map((i) => i.symbol))
+          : await api.startZerodhaLiveStream(instruments.map((i) => i.symbol));
       setLiveStreaming(true);
-      setLiveStreamMsg(`Streaming ${resolvedCount} of ${instruments.length} symbols live (Upstox).`);
+      setLiveStreamMsg(`Streaming ${resolvedCount} of ${instruments.length} symbols live (${liveStreamBroker === "upstox" ? "Upstox" : "Zerodha"}).`);
     } catch (e) {
       setLiveStreamMsg(String(e));
     }
@@ -328,6 +332,12 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
           <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
           Auto-refresh every 30s
         </label>
+        {!liveStreaming && (
+          <select value={liveStreamBroker} onChange={(e) => setLiveStreamBroker(e.target.value as "upstox" | "zerodha")} style={{ fontSize: 12 }}>
+            <option value="upstox">Upstox</option>
+            <option value="zerodha">Zerodha</option>
+          </select>
+        )}
         <button
           onClick={handleToggleLiveStreaming}
           style={{
@@ -336,7 +346,7 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
             fontWeight: liveStreaming ? 600 : 400,
           }}
         >
-          {liveStreaming ? "● Live (Upstox) — Stop" : "Start Live Streaming (Upstox)"}
+          {liveStreaming ? "● Live — Stop" : "Start Live Streaming"}
         </button>
       </div>
       {liveStreamMsg && <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 0, marginBottom: 8 }}>{liveStreamMsg}</p>}
