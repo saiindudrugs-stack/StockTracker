@@ -19,6 +19,8 @@ pub mod amfi;
 pub mod composite;
 pub mod upstox;
 pub mod upstox_fundamentals;
+pub mod nse_announcements;
+pub mod bse_announcements;
 pub mod prioritized;
 
 use async_trait::async_trait;

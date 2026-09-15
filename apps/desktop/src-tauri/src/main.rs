@@ -489,8 +489,33 @@ async fn get_stock_news(state: State<'_, AppState>, symbol: String) -> Result<Ve
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
 
+    // Real, verified regulatory filings first — genuinely different from
+    // the keyword-matched "regulatory" guess applied to general news
+    // below. Best-effort: NSE/BSE are both unofficial, occasionally
+    // blocked (NSE specifically blocks cloud/datacenter IPs, though this
+    // app runs on the user's own machine), so a failure here just means
+    // no real filings this time, not a broken News tab — falls straight
+    // through to the general news section either way.
+    let mut regulatory_items = Vec::new();
+    match instrument.exchange.to_uppercase().as_str() {
+        "NSE" => {
+            let client = pm_infrastructure::market_data::nse_announcements::NseAnnouncementsClient::new();
+            if let Ok(rows) = client.fetch_announcements(&instrument.symbol).await {
+                regulatory_items.extend(rows.into_iter().map(regulatory_to_news_item));
+            }
+        }
+        "BSE" => {
+            let client = pm_infrastructure::market_data::bse_announcements::BseAnnouncementsClient::new();
+            if let Ok(rows) = client.fetch_announcements(&instrument.symbol).await {
+                regulatory_items.extend(rows.into_iter().map(regulatory_to_news_item));
+            }
+        }
+        _ => {}
+    }
+
     if let Some(items) = try_upstox_news(&state, &instrument.symbol, &instrument.exchange).await {
-        return Ok(items);
+        regulatory_items.extend(items);
+        return Ok(regulatory_items);
     }
 
     let news = state
@@ -499,16 +524,24 @@ async fn get_stock_news(state: State<'_, AppState>, symbol: String) -> Result<Ve
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(news
-        .into_iter()
-        .map(|n| NewsItemView {
-            title: n.title,
-            publisher: n.publisher,
-            link: n.link,
-            published_at: n.published_at.format("%Y-%m-%d %H:%M UTC").to_string(),
-            is_regulatory: n.is_regulatory,
-        })
-        .collect())
+    regulatory_items.extend(news.into_iter().map(|n| NewsItemView {
+        title: n.title,
+        publisher: n.publisher,
+        link: n.link,
+        published_at: n.published_at.format("%Y-%m-%d %H:%M UTC").to_string(),
+        is_regulatory: n.is_regulatory,
+    }));
+    Ok(regulatory_items)
+}
+
+fn regulatory_to_news_item(a: pm_infrastructure::market_data::nse_announcements::RegulatoryAnnouncement) -> NewsItemView {
+    NewsItemView {
+        title: a.subject,
+        publisher: "NSE/BSE (verified filing)".to_string(),
+        link: a.attachment_url.unwrap_or_default(),
+        published_at: a.broadcast_date,
+        is_regulatory: true,
+    }
 }
 
 /// Same "None on any failure, caller falls back" contract as
@@ -1870,6 +1903,30 @@ async fn test_market_data_connection(state: State<'_, AppState>, provider: Strin
     quote.map(|q| format!("Connected — test quote (RELIANCE/AAPL): {}", q.price)).map_err(|e| e.to_string())
 }
 
+/// Same "green only after a real call succeeds" reasoning as
+/// test_market_data_connection — RELIANCE is dual-listed on both
+/// exchanges, so it works as the fixed test symbol either way. Reports
+/// how many announcements came back rather than just "connected", since
+/// zero results (no recent filings for RELIANCE, which is unlikely but
+/// possible) reads differently from a genuine failure.
+#[tauri::command]
+async fn test_announcements_connection(provider: String) -> Result<String, String> {
+    let result = match provider.as_str() {
+        "nse" => {
+            let client = pm_infrastructure::market_data::nse_announcements::NseAnnouncementsClient::new();
+            client.fetch_announcements("RELIANCE").await
+        }
+        "bse" => {
+            let client = pm_infrastructure::market_data::bse_announcements::BseAnnouncementsClient::new();
+            client.fetch_announcements("RELIANCE").await
+        }
+        other => return Err(format!("unknown announcements provider '{other}'")),
+    };
+    result
+        .map(|rows| format!("Connected — {} announcement(s) found for RELIANCE", rows.len()))
+        .map_err(|e| e.to_string())
+}
+
 /// Same reasoning as test_market_data_connection, applied to the AI
 /// providers — a tiny real prompt, not just "is a key saved."
 #[tauri::command]
@@ -3046,6 +3103,7 @@ fn main() {
             save_target_allocation,
             get_target_allocation,
             test_market_data_connection,
+            test_announcements_connection,
             test_ai_provider_connection,
             start_live_price_stream,
             stop_live_price_stream,

@@ -449,6 +449,25 @@ export function SettingsScreen({
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>NSE / BSE Announcements</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px" }}>
+          No account or key needed — real corporate announcements pulled directly from each
+          exchange's own site, replacing the old keyword-guessed "regulatory" tagging. Both are
+          unofficial endpoints; NSE specifically blocks requests from cloud/datacenter networks
+          (this app runs on your own machine, so that shouldn't affect you, but it's why this
+          can't be tested from anywhere except here).
+        </p>
+        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>NSE:</span>
+          <ConnectionIndicator onTest={() => api.testAnnouncementsConnection("nse")} />
+        </div>
+        <div style={{ display: "flex", gap: 16, alignItems: "center", marginTop: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>BSE:</span>
+          <ConnectionIndicator onTest={() => api.testAnnouncementsConnection("bse")} />
+        </div>
+      </div>
+
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Alpha Vantage</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
           Live-verified for India (BSE), US, and UK. Stored locally in your own database only;

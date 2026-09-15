@@ -162,9 +162,11 @@ export function NewsAndFundamentalsScreen() {
 
             <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 8px" }}>News and highlights (top 5)</p>
             <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 8px" }}>
-              "Regulatory" is a plain keyword match over headlines (board meetings, disclosures, SEBI/SEC
-              filings, dividends) — not a verified separate filings feed. Treat it as a helpful sort, not a
-              guarantee every real filing is caught.
+              Items labeled "NSE/BSE (verified filing)" are real corporate announcements pulled directly
+              from the exchange — not guaranteed to succeed every time (both are unofficial endpoints; NSE
+              in particular can be unavailable from some networks), but genuine filings when they load, not
+              a keyword guess. Other "Regulatory" tags are a plain keyword match over general news
+              headlines — a helpful sort, not a verified feed.
             </p>
             {newsError ? (
               <p style={{ fontSize: 12, color: colors.danger }}>Couldn't load news: {newsError}</p>

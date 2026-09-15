@@ -159,6 +159,7 @@ export const api = {
   // than just checking "is something saved." Explicit only (a button
   // click), never automatic.
   testMarketDataConnection: (provider: string) => invoke<string>("test_market_data_connection", { provider }),
+  testAnnouncementsConnection: (provider: string) => invoke<string>("test_announcements_connection", { provider }),
 
   // Live streaming — opt-in, explicit start/stop. Resolves each symbol's
   // Upstox instrument_key (needs the instrument cache refreshed first)
