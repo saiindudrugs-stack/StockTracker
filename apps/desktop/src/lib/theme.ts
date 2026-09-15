@@ -24,7 +24,11 @@ export const colors = {
 };
 
 export const cardStyle: CSSProperties = {
-  background: colors.surface,
+  // Whisper-subtle gradient, not a flat block — softens the repeated
+  // "gray box" look across Dashboard's stacked summary cards without
+  // touching any of the actual color-coded text (P&L red/green) inside
+  // them, which is where the real signal lives.
+  background: `linear-gradient(180deg, #F5F5F5 0%, ${colors.surface} 100%)`,
   borderRadius: 8,
   padding: "12px 16px",
 };
@@ -44,7 +48,12 @@ export const panelStyle: CSSProperties = {
 /// spread) so the rounded corners land on the outer edges instead of
 /// every cell.
 export const tableHeaderRow: CSSProperties = {
-  background: colors.navy,
+  // A subtle gradient rather than a flat block — same navy, softer to
+  // look at repeated across a page that already has multiple tables
+  // (Holdings alone has 14 columns), without changing what the color
+  // itself signals (this is still "header row," nothing color-coded
+  // here competes with the actual P&L red/green used elsewhere).
+  background: `linear-gradient(180deg, ${colors.navy} 0%, #16294A 100%)`,
   textAlign: "left",
 };
 
@@ -150,9 +159,9 @@ export function zebraRowTint(index: number): string {
 
 /// Whether a row's ticker should flash — beyond the threshold in either
 /// direction. Returns the animation name to use, or undefined for no flash.
-export function flashAnimation(pct: number | null): string | undefined {
+export function flashAnimation(pct: number | null, thresholdPct: number = BIG_MOVE_THRESHOLD): string | undefined {
   if (pct == null) return undefined;
-  if (pct <= -BIG_MOVE_THRESHOLD) return "flash-amber";
-  if (pct >= BIG_MOVE_THRESHOLD) return "flash-green";
+  if (pct <= -thresholdPct) return "flash-amber";
+  if (pct >= thresholdPct) return "flash-green";
   return undefined;
 }

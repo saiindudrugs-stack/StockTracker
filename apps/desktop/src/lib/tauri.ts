@@ -8,6 +8,8 @@ import type {
   InstrumentView,
   MarketSnapshotView,
   MarketSummaryView,
+  TaxSummaryView,
+  TaxLossHarvestingView,
   MfHoldingView,
   MfSchemeSearchResultView,
   NewsItemView,
@@ -35,12 +37,22 @@ export const api = {
     invoke<DashboardSummary>("get_dashboard_summary", { portfolioId }),
   getDashboardByMarket: (portfolioId: string) =>
     invoke<MarketSummaryView[]>("get_dashboard_by_market", { portfolioId }),
+  getTaxSummary: (portfolioId: string) => invoke<TaxSummaryView>("get_tax_summary", { portfolioId }),
+  getTaxLossHarvestingCandidates: (portfolioId: string) =>
+    invoke<TaxLossHarvestingView>("get_tax_loss_harvesting_candidates", { portfolioId }),
+  saveTargetAllocation: (allocationJson: string) => invoke<void>("save_target_allocation", { allocationJson }),
+  getTargetAllocation: () => invoke<string>("get_target_allocation"),
   listHoldings: (portfolioId: string, siRatePct?: number) =>
     invoke<HoldingView[]>("list_holdings", { portfolioId, siRatePct }),
   recordBuy: (portfolioId: string, symbol: string, quantity: string, price: string) =>
     invoke<void>("record_buy", { portfolioId, symbol, quantity, price }),
   recordSell: (portfolioId: string, symbol: string, quantity: string, price: string) =>
     invoke<void>("record_sell", { portfolioId, symbol, quantity, price }),
+  // sharesHeld/dividendPerShare, not quantity/price — matches the Rust
+  // command's own parameter names, since a dividend's two numbers mean
+  // something different from a Buy/Sell's.
+  recordDividend: (portfolioId: string, symbol: string, sharesHeld: string, dividendPerShare: string) =>
+    invoke<void>("record_dividend", { portfolioId, symbol, sharesHeld, dividendPerShare }),
   // csvContent is the raw file text, read client-side via FileReader — no
   // file-path plumbing needed since Tauri commands take plain strings.
   importHoldingsCsv: (portfolioId: string, csvContent: string) =>
@@ -134,6 +146,9 @@ export const api = {
 
   saveMarketDataPriority: (order: string) => invoke<void>("save_market_data_priority", { order }),
   getMarketDataPriority: () => invoke<string>("get_market_data_priority"),
+
+  saveFlashThreshold: (thresholdPct: number) => invoke<void>("save_flash_threshold", { thresholdPct }),
+  getFlashThreshold: () => invoke<number>("get_flash_threshold"),
 
   // Real connection tests — a saved key proves nothing about whether it's
   // actually valid, so these make one small live call per source rather

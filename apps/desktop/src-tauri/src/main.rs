@@ -12,10 +12,11 @@
 //! per HLD Section 5.1) — the same RELIANCE instrument row is looked up by
 //! every portfolio's holdings.
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use pm_application::use_cases::{
     ComputeXirrUseCase, DashboardSummary, DashboardSummaryUseCase, RecordTransactionUseCase,
 };
+use pm_domain::analytics::{open_lots, realized_gains_by_term};
 use pm_domain::entities::{AlertCondition, AlertRule, AssetClass, Holding, Instrument, Portfolio, Transaction, TransactionType};
 use pm_domain::repositories::{
     AlertRuleRepository, HoldingRepository, InstrumentRepository, PortfolioRepository, PriceRepository,
@@ -288,6 +289,12 @@ struct FundamentalsView {
     dividend_yield: Option<String>,
     week52_high: Option<String>,
     week52_low: Option<String>,
+    /// Today's trading volume — not part of any "fundamentals" endpoint
+    /// (it's a live quote field, not a static company metric), but the
+    /// News screen wants it shown alongside fundamentals, so it's sourced
+    /// from the same priority-ordered market_data provider already used
+    /// everywhere else in this app, not a new data source.
+    volume: Option<u64>,
     revenue_by_period: Vec<RevenuePeriodView>,
     /// Which source actually answered — surfaced to the frontend so it
     /// can be honest about where the numbers came from, same spirit as
@@ -311,35 +318,68 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
 
-    if let Some(view) = try_upstox_fundamentals(&state, &instrument.symbol, &instrument.exchange).await {
-        return Ok(view);
+    let mut view = if let Some(v) = try_upstox_fundamentals(&state, &instrument.symbol, &instrument.exchange).await {
+        v
+    } else {
+        let f = state
+            .yahoo_direct
+            .fetch_fundamentals(&instrument.symbol, &instrument.exchange)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        FundamentalsView {
+            sector: f.sector,
+            industry: f.industry,
+            description: f.description,
+            market_cap: f.market_cap.map(|d| d.to_string()),
+            pe_ratio: f.pe_ratio.map(|d| d.to_string()),
+            pb_ratio: None,
+            roe: None,
+            roce: None,
+            dividend_yield: f.dividend_yield.map(|d| d.to_string()),
+            week52_high: f.week52_high.map(|d| d.to_string()),
+            week52_low: f.week52_low.map(|d| d.to_string()),
+            volume: None,
+            revenue_by_period: f
+                .revenue_by_period
+                .into_iter()
+                .map(|p| RevenuePeriodView { period_end: p.period_end, revenue: p.revenue.to_string(), net_income: p.net_income.map(|d| d.to_string()) })
+                .collect(),
+            source: "yahoo".to_string(),
+        }
+    };
+
+    // Gap-fill only, never overwrite: neither Upstox's Fundamentals API
+    // nor Yahoo's fetch reliably return market cap (Upstox never does;
+    // Yahoo's has been unreliable) — one lightweight Alpha Vantage
+    // OVERVIEW call fills in whatever's still missing, without disturbing
+    // anything the primary source already answered. Silently skipped if
+    // no Alpha Vantage key is configured or the call itself fails — this
+    // is a nice-to-have layer, not something that should block the rest
+    // of the response.
+    if view.market_cap.is_none() || view.dividend_yield.is_none() || view.week52_high.is_none() {
+        let av = AlphaVantageProvider::new(state.app_settings.clone());
+        if let Ok(overview) = av.fetch_overview(&instrument.symbol, &instrument.exchange).await {
+            view.market_cap = view.market_cap.or(overview.market_cap.map(|v| v.to_string()));
+            view.dividend_yield = view.dividend_yield.or(overview.dividend_yield.map(|v| v.to_string()));
+            view.week52_high = view.week52_high.or(overview.week52_high.map(|v| v.to_string()));
+            view.week52_low = view.week52_low.or(overview.week52_low.map(|v| v.to_string()));
+            view.sector = view.sector.or(overview.sector);
+            view.industry = view.industry.or(overview.industry);
+            view.description = view.description.or(overview.description);
+        }
     }
 
-    let f = state
-        .yahoo_direct
-        .fetch_fundamentals(&instrument.symbol, &instrument.exchange)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Volume is always fetched live (via the same priority-ordered
+    // provider used everywhere else), never from a "fundamentals"
+    // endpoint — it's today's trading activity, not a static company
+    // metric. Best-effort: a failed quote here just leaves volume unset,
+    // same as every other optional field in this view.
+    if let Ok(quote) = state.market_data.fetch_quote(&instrument.symbol, &instrument.exchange).await {
+        view.volume = quote.volume;
+    }
 
-    Ok(FundamentalsView {
-        sector: f.sector,
-        industry: f.industry,
-        description: f.description,
-        market_cap: f.market_cap.map(|d| d.to_string()),
-        pe_ratio: f.pe_ratio.map(|d| d.to_string()),
-        pb_ratio: None,
-        roe: None,
-        roce: None,
-        dividend_yield: f.dividend_yield.map(|d| d.to_string()),
-        week52_high: f.week52_high.map(|d| d.to_string()),
-        week52_low: f.week52_low.map(|d| d.to_string()),
-        revenue_by_period: f
-            .revenue_by_period
-            .into_iter()
-            .map(|p| RevenuePeriodView { period_end: p.period_end, revenue: p.revenue.to_string(), net_income: p.net_income.map(|d| d.to_string()) })
-            .collect(),
-        source: "yahoo".to_string(),
-    })
+    Ok(view)
 }
 
 /// Returns None on ANY failure along the way (no token, no cached ISIN,
@@ -366,6 +406,7 @@ async fn try_upstox_fundamentals(state: &State<'_, AppState>, symbol: &str, exch
         dividend_yield: None, // not returned by Upstox's fundamentals suite
         week52_high: None,
         week52_low: None,
+        volume: None,
         revenue_by_period: f
             .income_statement
             .into_iter()
@@ -907,6 +948,153 @@ async fn get_dashboard_by_market(state: State<'_, AppState>, portfolio_id: Strin
     Ok(views)
 }
 
+#[derive(Serialize)]
+struct TaxSummaryRow {
+    symbol: String,
+    short_term_gain: String,
+    long_term_gain: String,
+}
+
+#[derive(Serialize)]
+struct TaxSummaryView {
+    rows: Vec<TaxSummaryRow>,
+    total_short_term: String,
+    total_long_term: String,
+}
+
+/// STCG/LTCG split for every instrument ever sold in this portfolio,
+/// computed fresh from the immutable ledger via FIFO lot matching (see
+/// tax_lots.rs) — nothing here is stored, it's a report over history that
+/// already exists. India equity rule: 12-month long-term threshold,
+/// applied per lot, not per position.
+#[tauri::command]
+async fn get_tax_summary(state: State<'_, AppState>, portfolio_id: String) -> Result<TaxSummaryView, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let all_txns = state.transactions.list_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())?;
+
+    let mut by_instrument: std::collections::HashMap<uuid::Uuid, Vec<Transaction>> = std::collections::HashMap::new();
+    for t in all_txns {
+        by_instrument.entry(t.instrument_id).or_default().push(t);
+    }
+
+    let today = ist_today();
+    let mut rows = Vec::new();
+    let mut total_short = Decimal::ZERO;
+    let mut total_long = Decimal::ZERO;
+
+    for (instrument_id, txns) in by_instrument {
+        let gains = realized_gains_by_term(&txns, today);
+        if gains.short_term.is_zero() && gains.long_term.is_zero() {
+            continue; // nothing ever sold for this instrument — no row to show
+        }
+        let instrument = state.instruments.get(instrument_id).await.map_err(|e| e.to_string())?;
+        total_short += gains.short_term;
+        total_long += gains.long_term;
+        rows.push(TaxSummaryRow {
+            symbol: instrument.symbol,
+            short_term_gain: gains.short_term.round_dp(2).to_string(),
+            long_term_gain: gains.long_term.round_dp(2).to_string(),
+        });
+    }
+    rows.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+
+    Ok(TaxSummaryView {
+        rows,
+        total_short_term: total_short.round_dp(2).to_string(),
+        total_long_term: total_long.round_dp(2).to_string(),
+    })
+}
+
+#[derive(Serialize)]
+struct TaxLossCandidate {
+    symbol: String,
+    quantity: String,
+    cost_price: String,
+    current_price: String,
+    unrealized_loss: String,
+    is_long_term: bool,
+    purchase_date: String,
+}
+
+#[derive(Serialize)]
+struct TaxLossHarvestingView {
+    candidates: Vec<TaxLossCandidate>,
+    total_realized_gains_this_fy: String,
+}
+
+/// India doesn't have a wash-sale rule, which is what makes this
+/// genuinely simple to act on (unlike the US version): a lot sitting at
+/// a loss can be sold to offset realized gains elsewhere in the same
+/// portfolio, then bought right back immediately if still wanted. Each
+/// open lot (from FIFO replay) is compared against the CURRENT live
+/// price — lots data alone can't know this is a loss, only today's quote
+/// can. `total_realized_gains_this_fy` is shown alongside so it's
+/// obvious how much there actually is to offset (India's fiscal year:
+/// April 1 - March 31).
+#[tauri::command]
+async fn get_tax_loss_harvesting_candidates(state: State<'_, AppState>, portfolio_id: String) -> Result<TaxLossHarvestingView, String> {
+    let portfolio_id = parse_portfolio_id(&portfolio_id)?;
+    let all_txns = state.transactions.list_for_portfolio(portfolio_id).await.map_err(|e| e.to_string())?;
+    let today = ist_today();
+
+    let fy_start = if today.month() >= 4 {
+        chrono::NaiveDate::from_ymd_opt(today.year(), 4, 1).unwrap()
+    } else {
+        chrono::NaiveDate::from_ymd_opt(today.year() - 1, 4, 1).unwrap()
+    };
+
+    let mut by_instrument: std::collections::HashMap<uuid::Uuid, Vec<Transaction>> = std::collections::HashMap::new();
+    for t in &all_txns {
+        by_instrument.entry(t.instrument_id).or_default().push(t.clone());
+    }
+
+    let mut total_realized_gains_this_fy = Decimal::ZERO;
+    let mut candidates = Vec::new();
+
+    for (instrument_id, txns) in &by_instrument {
+        // Only gains realized THIS fiscal year count toward "what could
+        // this loss offset" — a loss harvested today can't retroactively
+        // offset a gain from two years ago.
+        let this_fy_txns: Vec<Transaction> = txns.iter().filter(|t| t.trade_date >= fy_start).cloned().collect();
+        let gains = realized_gains_by_term(&this_fy_txns, today);
+        let net_this_instrument = gains.short_term + gains.long_term;
+        if net_this_instrument > Decimal::ZERO {
+            total_realized_gains_this_fy += net_this_instrument;
+        }
+
+        let lots = open_lots(txns, today);
+        if lots.is_empty() {
+            continue;
+        }
+        let Ok(instrument) = state.instruments.get(*instrument_id).await else { continue };
+        let Ok(Some(ltp)) = state.prices.latest_price(*instrument_id).await else { continue };
+
+        for lot in lots {
+            if lot.cost_price > ltp {
+                let loss = (ltp - lot.cost_price) * lot.quantity;
+                candidates.push(TaxLossCandidate {
+                    symbol: instrument.symbol.clone(),
+                    quantity: lot.quantity.round_dp(2).to_string(),
+                    cost_price: lot.cost_price.round_dp(2).to_string(),
+                    current_price: ltp.round_dp(2).to_string(),
+                    unrealized_loss: loss.round_dp(2).to_string(),
+                    is_long_term: lot.is_long_term,
+                    purchase_date: lot.purchase_date.to_string(),
+                });
+            }
+        }
+    }
+    // Biggest loss first — the ones worth looking at first.
+    candidates.sort_by(|a, b| {
+        a.unrealized_loss.parse::<f64>().unwrap_or(0.0).partial_cmp(&b.unrealized_loss.parse::<f64>().unwrap_or(0.0)).unwrap()
+    });
+
+    Ok(TaxLossHarvestingView {
+        candidates,
+        total_realized_gains_this_fy: total_realized_gains_this_fy.round_dp(2).to_string(),
+    })
+}
+
 struct HoldingMetrics {
     ltp: Option<Decimal>,
     previous_close: Option<Decimal>,
@@ -1267,6 +1455,12 @@ struct StockRiskReturn {
     symbol: String,
     annualized_return_pct: f64,
     annualized_volatility_pct: f64,
+    /// Risk-adjusted return: was this return worth the volatility taken,
+    /// not just "was it positive." Uses a fixed 7% risk-free-rate
+    /// assumption (roughly India's 10-year G-Sec yield) — a reasonable
+    /// default, not something pulled live, so treat it as a rough gauge
+    /// rather than a precise institutional-grade figure.
+    sharpe_ratio: f64,
     /// Plain-language quadrant label matching the reference article's own
     /// framing ("High Risk Low Return" etc.) — computed by comparing each
     /// stock against the *median* return/volatility of the other held
@@ -1348,6 +1542,7 @@ async fn get_portfolio_analysis(state: State<'_, AppState>, portfolio_id: String
     let median_return = median(ann_returns.clone());
     let median_vol = median(ann_vols.clone());
 
+    const RISK_FREE_RATE_PCT: f64 = 7.0;
     let stocks: Vec<StockRiskReturn> = symbol_returns
         .iter()
         .enumerate()
@@ -1360,6 +1555,7 @@ async fn get_portfolio_analysis(state: State<'_, AppState>, portfolio_id: String
                 symbol: symbol.clone(),
                 annualized_return_pct: ret,
                 annualized_volatility_pct: vol,
+                sharpe_ratio: pm_domain::analytics::sharpe_ratio(ret, vol, RISK_FREE_RATE_PCT),
                 risk_label: format!("{risk_word}, {return_word}"),
             }
         })
@@ -1466,6 +1662,50 @@ async fn get_market_data_priority(state: State<'_, AppState>) -> Result<String, 
         .map_err(|e| e.to_string())?
         .filter(|o| !o.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_PRIORITY_ORDER.to_string()))
+}
+
+const FLASH_THRESHOLD_SETTING: &str = "flash_threshold_pct";
+const DEFAULT_FLASH_THRESHOLD_PCT: f64 = 3.5;
+
+/// The day-move flash animation on Holdings/Watchlist rows was a fixed
+/// 3.5% — now user-configurable (stored as a plain percentage, e.g. "3.5"
+/// for 3.5%, converted to a fraction on the frontend where the animation
+/// logic already expects one).
+#[tauri::command]
+async fn save_flash_threshold(state: State<'_, AppState>, threshold_pct: f64) -> Result<(), String> {
+    state.app_settings.set(FLASH_THRESHOLD_SETTING, &threshold_pct.to_string()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_flash_threshold(state: State<'_, AppState>) -> Result<f64, String> {
+    Ok(state
+        .app_settings
+        .get(FLASH_THRESHOLD_SETTING)
+        .await
+        .map_err(|e| e.to_string())?
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(DEFAULT_FLASH_THRESHOLD_PCT))
+}
+
+const TARGET_ALLOCATION_SETTING: &str = "target_sector_allocation_json";
+
+/// Stored as a raw JSON object string (e.g. {"Energy": 30, "IT": 20}) —
+/// deliberately not a typed Rust struct, since this is just a sector-name
+/// -> target-percentage map the frontend already builds from the same
+/// sector names it gets from holdings; a pass-through string avoids
+/// keeping two copies of "what sectors exist" in sync between Rust and
+/// TypeScript. Current (actual) allocation is already computed
+/// client-side from holdings data — this only stores the TARGET half of
+/// the comparison.
+#[tauri::command]
+async fn save_target_allocation(state: State<'_, AppState>, allocation_json: String) -> Result<(), String> {
+    state.app_settings.set(TARGET_ALLOCATION_SETTING, &allocation_json).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_target_allocation(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.app_settings.get(TARGET_ALLOCATION_SETTING).await.map_err(|e| e.to_string())?.unwrap_or_else(|| "{}".to_string()))
 }
 
 /// The whole point of the "green indicator light": a saved key proves
@@ -2192,11 +2432,14 @@ async fn remove_non_indian_instruments(state: State<'_, AppState>) -> Result<Cle
     Ok(CleanupResult { removed, kept })
 }
 
-/// Shared by record_buy and record_sell — both are "look up the instrument,
-/// build a Transaction, run it through RecordTransactionUseCase" with only
-/// the TransactionType differing. Kept as one function rather than two
-/// near-identical copies after several bugs earlier in this project came
-/// from exactly that kind of duplication drifting apart.
+/// Shared by record_buy, record_sell, and record_dividend — all three are
+/// "look up the instrument, build a Transaction, run it through
+/// RecordTransactionUseCase" with only the TransactionType and fee
+/// differing. Kept as one function rather than near-identical copies
+/// after several bugs earlier in this project came from exactly that
+/// kind of duplication drifting apart. `fees` is a parameter rather than
+/// hardcoded here specifically because a flat brokerage fee makes sense
+/// for Buy/Sell but not for a Dividend (no brokerage on receiving one).
 async fn record_transaction_of_type(
     state: &State<'_, AppState>,
     portfolio_id: String,
@@ -2204,6 +2447,7 @@ async fn record_transaction_of_type(
     quantity: String,
     price: String,
     transaction_type: TransactionType,
+    fees: Decimal,
 ) -> Result<(), String> {
     let portfolio_id = parse_portfolio_id(&portfolio_id)?;
     let instrument = state
@@ -2220,7 +2464,7 @@ async fn record_transaction_of_type(
         transaction_type,
         quantity: Decimal::from_str(&quantity).map_err(|e| e.to_string())?,
         price: Money::inr(Decimal::from_str(&price).map_err(|e| e.to_string())?),
-        fees: Money::inr(Decimal::from_str("20").unwrap()),
+        fees: Money::inr(fees),
         trade_date: ist_today(),
         broker_ref: None,
         recorded_at: chrono::Utc::now(),
@@ -2243,7 +2487,7 @@ async fn record_buy(
     quantity: String,
     price: String,
 ) -> Result<(), String> {
-    record_transaction_of_type(&state, portfolio_id, symbol, quantity, price, TransactionType::Buy).await
+    record_transaction_of_type(&state, portfolio_id, symbol, quantity, price, TransactionType::Buy, Decimal::from_str("20").unwrap()).await
 }
 
 #[tauri::command]
@@ -2254,7 +2498,26 @@ async fn record_sell(
     quantity: String,
     price: String,
 ) -> Result<(), String> {
-    record_transaction_of_type(&state, portfolio_id, symbol, quantity, price, TransactionType::Sell).await
+    record_transaction_of_type(&state, portfolio_id, symbol, quantity, price, TransactionType::Sell, Decimal::from_str("20").unwrap()).await
+}
+
+/// Records a dividend — `quantity` is shares held as of record date,
+/// `price` is the dividend amount PER SHARE (matching how Bonus/Split
+/// already reuse quantity/price with type-specific meaning via the same
+/// Transaction struct). No brokerage fee. This is what makes XIRR
+/// actually reflect total return for dividend payers — the domain-level
+/// cash_impact() calculation already treats a Dividend as a positive
+/// cashflow correctly; what was missing was simply a way to record one at
+/// all.
+#[tauri::command]
+async fn record_dividend(
+    state: State<'_, AppState>,
+    portfolio_id: String,
+    symbol: String,
+    shares_held: String,
+    dividend_per_share: String,
+) -> Result<(), String> {
+    record_transaction_of_type(&state, portfolio_id, symbol, shares_held, dividend_per_share, TransactionType::Dividend, Decimal::ZERO).await
 }
 
 #[tauri::command]
@@ -2427,6 +2690,8 @@ fn main() {
             delete_portfolio,
             get_dashboard_summary,
             get_dashboard_by_market,
+            get_tax_summary,
+            get_tax_loss_harvesting_candidates,
             list_holdings,
             list_instruments,
             list_equity_instruments,
@@ -2437,6 +2702,7 @@ fn main() {
             get_price_history,
             record_buy,
             record_sell,
+            record_dividend,
             compute_xirr_for_symbol,
             refresh_prices,
             get_market_snapshot,
@@ -2460,6 +2726,10 @@ fn main() {
             refresh_upstox_instrument_cache,
             save_market_data_priority,
             get_market_data_priority,
+            save_flash_threshold,
+            get_flash_threshold,
+            save_target_allocation,
+            get_target_allocation,
             test_market_data_connection,
             test_ai_provider_connection,
             save_ai_provider_key,

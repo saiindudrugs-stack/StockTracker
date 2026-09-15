@@ -55,6 +55,84 @@ impl AlphaVantageProvider {
             _ => symbol.to_string(),
         }
     }
+
+    /// Verified real field names (MarketCapitalization, PERatio,
+    /// DividendYield, 52WeekHigh/Low, Sector, Industry, Description) via
+    /// Alpha Vantage's own published OVERVIEW docs and independent
+    /// third-party confirmation — NOT live-tested against a real key from
+    /// this sandbox, same honesty caveat as everything else built without
+    /// a live credential. Added specifically to fill a real gap: neither
+    /// Upstox's Fundamentals API nor Yahoo's fundamentals fetch reliably
+    /// return market cap, and this app's News screen wants at least that.
+    pub async fn fetch_overview(&self, symbol: &str, exchange: &str) -> Result<AlphaVantageOverview, MarketDataError> {
+        let api_key = self
+            .settings
+            .get(ALPHA_VANTAGE_API_KEY_SETTING)
+            .await
+            .map_err(|e| MarketDataError::RequestFailed(e.to_string()))?
+            .filter(|k| !k.trim().is_empty())
+            .ok_or_else(|| MarketDataError::RequestFailed("no Alpha Vantage API key configured in Settings".to_string()))?;
+
+        let av_symbol = Self::to_alpha_vantage_symbol(symbol, exchange);
+        let url = format!("https://www.alphavantage.co/query?function=OVERVIEW&symbol={av_symbol}&apikey={api_key}");
+        let response = self.http.get(&url).send().await.map_err(|e| MarketDataError::RequestFailed(e.to_string()))?;
+        let body: RawOverview = response
+            .json()
+            .await
+            .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't parse Alpha Vantage overview for {av_symbol}: {e}")))?;
+
+        // An unrecognized symbol comes back as `{}` on this endpoint too
+        // (same shape as GLOBAL_QUOTE's empty-object failure mode) rather
+        // than an HTTP error — Symbol being None is how that's detected.
+        if body.symbol.is_none() {
+            return Err(MarketDataError::NoData(format!("{av_symbol}: empty overview — bad symbol, rate limit, or invalid key")));
+        }
+
+        Ok(AlphaVantageOverview {
+            sector: body.sector,
+            industry: body.industry,
+            description: body.description,
+            market_cap: body.market_capitalization.and_then(|s| s.parse::<f64>().ok()),
+            pe_ratio: body.pe_ratio.and_then(|s| s.parse::<f64>().ok()),
+            dividend_yield: body.dividend_yield.and_then(|s| s.parse::<f64>().ok()),
+            week52_high: body.week_52_high.and_then(|s| s.parse::<f64>().ok()),
+            week52_low: body.week_52_low.and_then(|s| s.parse::<f64>().ok()),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AlphaVantageOverview {
+    pub sector: Option<String>,
+    pub industry: Option<String>,
+    pub description: Option<String>,
+    pub market_cap: Option<f64>,
+    pub pe_ratio: Option<f64>,
+    pub dividend_yield: Option<f64>,
+    pub week52_high: Option<f64>,
+    pub week52_low: Option<f64>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawOverview {
+    #[serde(rename = "Symbol")]
+    symbol: Option<String>,
+    #[serde(rename = "Sector")]
+    sector: Option<String>,
+    #[serde(rename = "Industry")]
+    industry: Option<String>,
+    #[serde(rename = "Description")]
+    description: Option<String>,
+    #[serde(rename = "MarketCapitalization")]
+    market_capitalization: Option<String>,
+    #[serde(rename = "PERatio")]
+    pe_ratio: Option<String>,
+    #[serde(rename = "DividendYield")]
+    dividend_yield: Option<String>,
+    #[serde(rename = "52WeekHigh")]
+    week_52_high: Option<String>,
+    #[serde(rename = "52WeekLow")]
+    week_52_low: Option<String>,
 }
 
 #[async_trait]
@@ -195,6 +273,21 @@ struct DailyBarRaw {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_a_real_shaped_overview_response() {
+        let sample = r#"{"Symbol": "IBM", "Sector": "TECHNOLOGY", "Industry": "COMPUTER & OFFICE EQUIPMENT", "Description": "International Business Machines.", "MarketCapitalization": "150000000000", "PERatio": "22.5", "DividendYield": "0.045", "52WeekHigh": "230.50", "52WeekLow": "150.20"}"#;
+        let parsed: RawOverview = serde_json::from_str(sample).unwrap();
+        assert_eq!(parsed.symbol.as_deref(), Some("IBM"));
+        assert_eq!(parsed.market_capitalization.as_deref(), Some("150000000000"));
+    }
+
+    #[test]
+    fn empty_overview_object_has_no_symbol_signaling_bad_lookup() {
+        let sample = r#"{}"#;
+        let parsed: RawOverview = serde_json::from_str(sample).unwrap();
+        assert!(parsed.symbol.is_none());
+    }
 
     #[test]
     fn bse_and_nse_both_map_to_the_verified_bse_suffix() {

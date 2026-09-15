@@ -1,12 +1,54 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/tauri";
-import type { AlertRuleView, DashboardSummary, HoldingView, MarketSummaryView } from "../lib/types";
+import type { AlertRuleView, DashboardSummary, HoldingView, MarketSummaryView, TaxSummaryView, TaxLossHarvestingView } from "../lib/types";
 import { cardStyle, colors, panelStyle, pnlColor, fmtMoney } from "../lib/theme";
 
 // A few distinct, low-saturation colors for the sector breakdown bars —
 // enough for a handful of sectors; this is demo-scale data (2 instruments),
 // not a real allocation engine.
 const SECTOR_COLORS = ["#2E74B5", "#5B9BD5", "#9DC3E6", "#1F3864", "#7F9EC2"];
+
+type AiTag = "CONCERN" | "POSITIVE" | "QUESTION" | "INFO";
+
+/// Splits the model's response into lines and pulls off a leading
+/// [TAG] marker where present — see build_portfolio_prompt in
+/// ai_insights.rs for why this is a tag the model writes itself rather
+/// than sentiment we try to guess from prose client-side (guessing would
+/// be fragile; asking the model to tag its own points is reliable).
+/// Untagged lines (blank lines, or if the model didn't follow the format
+/// for some line) just render plain — never blocks the response.
+function parseAiInsightLines(raw: string): { tag: AiTag | null; text: string }[] {
+  const tagPattern = /^\[(CONCERN|POSITIVE|QUESTION|INFO)\]\s*/;
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const match = line.match(tagPattern);
+      if (match) {
+        return { tag: match[1] as AiTag, text: line.slice(match[0].length) };
+      }
+      return { tag: null, text: line };
+    });
+}
+
+/// Deliberately subtle — a thin left border plus a ~8% tint, not a loud
+/// background fill. Per research on fintech color usage: red/green (and
+/// their neighbors here) should read as signals used sparingly, not as
+/// decoration competing with the actual P&L colors used everywhere else
+/// in this app.
+function aiTagColor(tag: AiTag): string {
+  switch (tag) {
+    case "CONCERN":
+      return "#B45309"; // amber, matches the existing "regulatory" convention on the News screen
+    case "POSITIVE":
+      return colors.success;
+    case "QUESTION":
+      return colors.accent;
+    case "INFO":
+      return colors.textMuted;
+  }
+}
 
 export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -19,6 +61,58 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
 
   const AI_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
   const [availableAiProviders, setAvailableAiProviders] = useState<string[]>([]);
+
+  const [taxSummary, setTaxSummary] = useState<TaxSummaryView | null>(null);
+  const [taxSummaryExpanded, setTaxSummaryExpanded] = useState(false);
+  const [taxLossView, setTaxLossView] = useState<TaxLossHarvestingView | null>(null);
+  const [taxLossExpanded, setTaxLossExpanded] = useState(false);
+
+  const [targetAllocations, setTargetAllocations] = useState<Record<string, number>>({});
+  const [editingTargets, setEditingTargets] = useState(false);
+  const [targetInputs, setTargetInputs] = useState<Record<string, string>>({});
+  const [targetSaveMsg, setTargetSaveMsg] = useState<string | null>(null);
+  // How many percentage points off target counts as "worth flagging" —
+  // matches the standard "percentage-of-portfolio rebalancing" threshold
+  // approach (one of the three well-established institutional rebalancing
+  // techniques), not an arbitrary number.
+  const DRIFT_THRESHOLD_PCT = 5;
+
+  useEffect(() => {
+    api
+      .getTargetAllocation()
+      .then((json) => {
+        try {
+          setTargetAllocations(JSON.parse(json));
+        } catch {
+          setTargetAllocations({});
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleSaveTargets() {
+    const parsed: Record<string, number> = {};
+    for (const [sector, value] of Object.entries(targetInputs)) {
+      const num = parseFloat(value);
+      if (Number.isFinite(num) && num >= 0) parsed[sector] = num;
+    }
+    try {
+      await api.saveTargetAllocation(JSON.stringify(parsed));
+      setTargetAllocations(parsed);
+      setEditingTargets(false);
+      setTargetSaveMsg("Saved.");
+    } catch (e) {
+      setTargetSaveMsg(String(e));
+    }
+  }
+
+  useEffect(() => {
+    // Independent of the main Promise.all above, same reasoning as
+    // marketSummaries — supplementary, shouldn't fail alongside the core
+    // dashboard numbers.
+    api.getTaxSummary(portfolioId).then(setTaxSummary).catch(() => {});
+    api.getTaxLossHarvestingCandidates(portfolioId).then(setTaxLossView).catch(() => {});
+  }, [portfolioId]);
   const [selectedAiProvider, setSelectedAiProvider] = useState<string>("");
   const [aiConfirming, setAiConfirming] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -184,33 +278,77 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 12, marginTop: 8 }}>
         <div style={panelStyle}>
-          <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px", fontWeight: 600 }}>
-            Sector allocation
-          </p>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <p style={{ fontSize: 12, color: colors.textMuted, margin: 0, fontWeight: 600 }}>Sector allocation</p>
+            <span
+              onClick={() => {
+                if (!editingTargets) {
+                  const seed: Record<string, string> = {};
+                  allocation.forEach(([sector]) => {
+                    seed[sector] = (targetAllocations[sector] ?? "").toString();
+                  });
+                  setTargetInputs(seed);
+                }
+                setEditingTargets((v) => !v);
+              }}
+              style={{ fontSize: 11, color: colors.accent, cursor: "pointer" }}
+            >
+              {editingTargets ? "Cancel" : "Set targets"}
+            </span>
+          </div>
           {allocation.length === 0 ? (
             <p style={{ fontSize: 12, color: colors.textMuted }}>No priced holdings yet.</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {allocation.map(([sector, value], i) => {
                 const pct = totalMarketValue > 0 ? (value / totalMarketValue) * 100 : 0;
+                const target = targetAllocations[sector];
+                const drift = target != null ? pct - target : null;
+                const isDrifted = drift != null && Math.abs(drift) > DRIFT_THRESHOLD_PCT;
                 return (
                   <div key={sector}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
                       <span>{sector}</span>
-                      <span style={{ color: colors.textMuted }}>{pct.toFixed(1)}%</span>
+                      {editingTargets ? (
+                        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <span style={{ color: colors.textMuted }}>{pct.toFixed(1)}% → target</span>
+                          <input
+                            value={targetInputs[sector] ?? ""}
+                            onChange={(e) => setTargetInputs((prev) => ({ ...prev, [sector]: e.target.value }))}
+                            style={{ width: 50, fontSize: 11 }}
+                          />
+                          <span style={{ fontSize: 11 }}>%</span>
+                        </span>
+                      ) : (
+                        <span style={{ color: isDrifted ? colors.danger : colors.textMuted, fontWeight: isDrifted ? 600 : 400 }}>
+                          {pct.toFixed(1)}%
+                          {target != null && ` (target ${target}%${isDrifted ? `, drifted ${drift! > 0 ? "+" : ""}${drift!.toFixed(1)}pt` : ""})`}
+                        </span>
+                      )}
                     </div>
-                    <div style={{ background: "#E5E5E5", borderRadius: 4, height: 8, overflow: "hidden" }}>
+                    <div style={{ background: "#E5E5E5", borderRadius: 4, height: 8, overflow: "hidden", position: "relative" }}>
                       <div
                         style={{
                           width: `${pct}%`,
                           height: "100%",
-                          background: SECTOR_COLORS[i % SECTOR_COLORS.length],
+                          background: isDrifted ? colors.danger : SECTOR_COLORS[i % SECTOR_COLORS.length],
                         }}
                       />
+                      {target != null && (
+                        <div style={{ position: "absolute", left: `${target}%`, top: 0, bottom: 0, width: 2, background: colors.navy }} />
+                      )}
                     </div>
                   </div>
                 );
               })}
+              {editingTargets && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                  <button onClick={handleSaveTargets} style={{ fontSize: 11 }}>
+                    Save targets
+                  </button>
+                  {targetSaveMsg && <span style={{ fontSize: 11, color: colors.textMuted }}>{targetSaveMsg}</span>}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -328,8 +466,28 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
 
           {aiInsights && (
             <div>
-              <div style={{ ...cardStyle, padding: 12, whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.6 }}>
-                {aiInsights}
+              <div style={{ ...cardStyle, padding: 12 }}>
+                {parseAiInsightLines(aiInsights).map((line, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      fontSize: 13,
+                      lineHeight: 1.6,
+                      padding: line.tag ? "4px 10px" : "2px 0",
+                      marginBottom: 4,
+                      borderLeft: line.tag ? `3px solid ${aiTagColor(line.tag)}` : undefined,
+                      background: line.tag ? `${aiTagColor(line.tag)}14` : undefined,
+                      borderRadius: line.tag ? "0 4px 4px 0" : undefined,
+                    }}
+                  >
+                    {line.tag && (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: aiTagColor(line.tag), marginRight: 6 }}>
+                        {line.tag}
+                      </span>
+                    )}
+                    {line.text}
+                  </div>
+                ))}
               </div>
               <button
                 onClick={() => {
@@ -340,6 +498,101 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
               >
                 Clear
               </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {taxSummary && taxSummary.rows.length > 0 && (
+        <div style={{ ...panelStyle, marginTop: 12 }}>
+          <div
+            onClick={() => setTaxSummaryExpanded((v) => !v)}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+          >
+            <p style={{ fontSize: 12, color: colors.textMuted, margin: 0, fontWeight: 600 }}>
+              Tax summary (STCG/LTCG) — Short-term ₹{fmtMoney(taxSummary.total_short_term)}, Long-term ₹
+              {fmtMoney(taxSummary.total_long_term)}
+            </p>
+            <span style={{ fontSize: 11, color: colors.accent }}>{taxSummaryExpanded ? "Hide" : "Show"} by symbol</span>
+          </div>
+          {taxSummaryExpanded && (
+            <div style={{ marginTop: 10 }}>
+              <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 8px" }}>
+                Computed via FIFO lot matching over your full transaction history — India's 12-month
+                equity long-term threshold, applied per purchase lot, not to the position as a whole.
+              </p>
+              <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
+                <thead>
+                  <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
+                    <th style={{ padding: "4px 8px 4px 0" }}>Symbol</th>
+                    <th style={{ padding: "4px 8px" }}>Short-term gain</th>
+                    <th style={{ padding: "4px 8px" }}>Long-term gain</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {taxSummary.rows.map((r) => (
+                    <tr key={r.symbol}>
+                      <td style={{ padding: "4px 8px 4px 0" }}>{r.symbol}</td>
+                      <td style={{ padding: "4px 8px", color: pnlColor(parseFloat(r.short_term_gain)) }}>
+                        ₹{fmtMoney(r.short_term_gain)}
+                      </td>
+                      <td style={{ padding: "4px 8px", color: pnlColor(parseFloat(r.long_term_gain)) }}>
+                        ₹{fmtMoney(r.long_term_gain)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {taxLossView && taxLossView.candidates.length > 0 && (
+        <div style={{ ...panelStyle, marginTop: 12 }}>
+          <div
+            onClick={() => setTaxLossExpanded((v) => !v)}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+          >
+            <p style={{ fontSize: 12, color: colors.textMuted, margin: 0, fontWeight: 600 }}>
+              Tax-loss harvesting — {taxLossView.candidates.length} lot{taxLossView.candidates.length === 1 ? "" : "s"} at
+              a loss, ₹{fmtMoney(taxLossView.total_realized_gains_this_fy)} realized gains this FY to offset
+            </p>
+            <span style={{ fontSize: 11, color: colors.accent }}>{taxLossExpanded ? "Hide" : "Show"} candidates</span>
+          </div>
+          {taxLossExpanded && (
+            <div style={{ marginTop: 10 }}>
+              <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 8px" }}>
+                India has no wash-sale rule — a lot here can be sold to offset the gains above, then
+                bought straight back if you still want the position. Not tax advice; confirm with
+                whoever files your return.
+              </p>
+              <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
+                <thead>
+                  <tr style={{ textAlign: "left", borderBottom: `1px solid ${colors.border}` }}>
+                    <th style={{ padding: "4px 8px 4px 0" }}>Symbol</th>
+                    <th style={{ padding: "4px 8px" }}>Qty</th>
+                    <th style={{ padding: "4px 8px" }}>Cost</th>
+                    <th style={{ padding: "4px 8px" }}>Current</th>
+                    <th style={{ padding: "4px 8px" }}>Loss</th>
+                    <th style={{ padding: "4px 8px" }}>Term</th>
+                    <th style={{ padding: "4px 8px" }}>Bought</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {taxLossView.candidates.map((c, i) => (
+                    <tr key={i}>
+                      <td style={{ padding: "4px 8px 4px 0" }}>{c.symbol}</td>
+                      <td style={{ padding: "4px 8px" }}>{c.quantity}</td>
+                      <td style={{ padding: "4px 8px" }}>₹{fmtMoney(c.cost_price)}</td>
+                      <td style={{ padding: "4px 8px" }}>₹{fmtMoney(c.current_price)}</td>
+                      <td style={{ padding: "4px 8px", color: colors.danger }}>₹{fmtMoney(c.unrealized_loss)}</td>
+                      <td style={{ padding: "4px 8px" }}>{c.is_long_term ? "Long" : "Short"}</td>
+                      <td style={{ padding: "4px 8px" }}>{c.purchase_date}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

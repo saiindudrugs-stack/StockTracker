@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../lib/tauri";
 import type { PortfolioAnalysisView } from "../lib/types";
-import { colors, panelStyle, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell } from "../lib/theme";
+import { colors, panelStyle, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, pnlColor } from "../lib/theme";
 
 function correlationColor(c: number): string {
   // Green for positive correlation (move together), red for negative
@@ -83,6 +83,9 @@ export function AnalysisScreen({ portfolioId }: { portfolioId: string }) {
                     <th style={{ ...tableHeaderCell, ...firstHeaderCell }}>Symbol</th>
                     <th style={tableHeaderCell}>Ann. Return</th>
                     <th style={tableHeaderCell}>Ann. Volatility</th>
+                    <th style={tableHeaderCell} title="Risk-adjusted return vs. a 7% risk-free assumption — was this return worth the volatility taken">
+                      Sharpe
+                    </th>
                     <th style={{ ...tableHeaderCell, ...lastHeaderCell }}>Read</th>
                   </tr>
                 </thead>
@@ -94,6 +97,7 @@ export function AnalysisScreen({ portfolioId }: { portfolioId: string }) {
                         {s.annualized_return_pct.toFixed(1)}%
                       </td>
                       <td>{s.annualized_volatility_pct.toFixed(1)}%</td>
+                      <td style={{ color: pnlColor(s.sharpe_ratio) }}>{s.sharpe_ratio.toFixed(2)}</td>
                       <td style={{ color: colors.textMuted }}>{s.risk_label}</td>
                     </tr>
                   ))}

@@ -33,6 +33,13 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
   const [instruments, setInstruments] = useState<InstrumentView[]>([]);
   const [rows, setRows] = useState<Record<string, Row>>({});
   const [newTicker, setNewTicker] = useState("");
+  const [flashThreshold, setFlashThreshold] = useState(0.035);
+  useEffect(() => {
+    api
+      .getFlashThreshold()
+      .then((pct) => setFlashThreshold(pct / 100))
+      .catch(() => {});
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -306,6 +313,9 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
             <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("day_change_pct")}>
               Day chg %{sortIndicator("day_change_pct")}
             </th>
+            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("volume")}>
+              Volume{sortIndicator("volume")}
+            </th>
             <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("day_high")}>
               Day High{sortIndicator("day_high")}
             </th>
@@ -317,9 +327,6 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
             </th>
             <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("week52_low")}>
               52W Low{sortIndicator("week52_low")}
-            </th>
-            <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("volume")}>
-              Volume{sortIndicator("volume")}
             </th>
             <th style={{ ...tableHeaderCell, cursor: "pointer" }} onClick={() => handleSortClick("rsi")}>
               RSI(14){sortIndicator("rsi")}
@@ -338,7 +345,7 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
             const row = rows[inst.symbol];
             const dayChange = row?.snapshot?.day_change_pct ?? null;
             const tint = dayChangeRowTint(dayChange) ?? zebraRowTint(index);
-            const flash = flashAnimation(dayChange);
+            const flash = flashAnimation(dayChange, flashThreshold);
             return (
               <>
                 <tr
@@ -372,11 +379,11 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
                   <td style={{ color: dayChange != null ? pnlColor(dayChange) : colors.textMuted, fontWeight: 600 }}>
                     {dayChange != null ? `${(dayChange * 100).toFixed(2)}%` : "—"}
                   </td>
+                  <td>{row?.snapshot?.volume?.toLocaleString() ?? "—"}</td>
                   <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.day_high)}</td>
                   <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.day_low)}</td>
                   <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.week52_high)}</td>
                   <td>{currencySymbolForExchange(inst.exchange)}{fmtMoney(row?.snapshot?.week52_low)}</td>
-                  <td>{row?.snapshot?.volume?.toLocaleString() ?? "—"}</td>
                   <td style={{ color: rsiColor(row?.analysis?.rsi_14 ?? null), fontWeight: 600 }}>
                     {row?.analysis ? fmtNum(row.analysis.rsi_14) : "—"}
                   </td>

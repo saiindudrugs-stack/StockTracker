@@ -235,7 +235,15 @@ pub fn build_portfolio_prompt(portfolio_name: &str, holdings_summary: &str, sect
          Please provide: (1) a brief overview of the portfolio's composition, (2) any notable \
          concentration or diversification observations, (3) 2-3 general questions or areas worth the \
          owner's own further research, given what's here. Keep it concise — a few short paragraphs, not \
-         an exhaustive report."
+         an exhaustive report.\n\n\
+         FORMAT: write each distinct point as its own line, and prefix every line with exactly one of \
+         these tags, whichever best fits that specific point — not the whole response as one tag: \
+         [CONCERN] for something worth caution (concentration risk, a large unrealized loss, heavy \
+         sector skew), [POSITIVE] for something going well (strong gains, good diversification, \
+         healthy returns), [QUESTION] for something worth the owner researching further, [INFO] for \
+         plain factual observations that are neither positive nor concerning. Example line: \"[CONCERN] \
+         Energy makes up 42% of the portfolio, well above typical single-sector guidance.\" Use these \
+         tags for every line of substance — don't leave any point untagged, and don't invent other tags."
     )
 }
 
@@ -279,6 +287,14 @@ mod tests {
         assert!(prompt.contains("RELIANCE: 300 shares"));
         assert!(prompt.contains("Energy: 40%"));
         assert!(prompt.contains("12.50%"));
+    }
+
+    #[test]
+    fn prompt_instructs_the_model_to_tag_every_line_for_frontend_color_coding() {
+        let prompt = build_portfolio_prompt("My Portfolio", "RELIANCE: 300 shares", "Energy: 40%", None);
+        for tag in ["[CONCERN]", "[POSITIVE]", "[QUESTION]", "[INFO]"] {
+            assert!(prompt.contains(tag), "prompt should mention the {tag} tag so the model knows to use it");
+        }
     }
 
     #[test]

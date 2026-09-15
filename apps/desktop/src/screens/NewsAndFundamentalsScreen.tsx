@@ -91,10 +91,16 @@ export function NewsAndFundamentalsScreen() {
 
             {fundamentals ? (
               <>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 16 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 16 }}>
                   <div style={{ ...panelStyle, padding: 10 }}>
                     <div style={{ fontSize: 10, color: colors.textMuted }}>Market cap</div>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>{fmtMoney(fundamentals.market_cap)}</div>
+                  </div>
+                  <div style={{ ...panelStyle, padding: 10 }}>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>Volume (today)</div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>
+                      {fundamentals.volume != null ? fundamentals.volume.toLocaleString() : "—"}
+                    </div>
                   </div>
                   <div style={{ ...panelStyle, padding: 10 }}>
                     <div style={{ fontSize: 10, color: colors.textMuted }}>P/E</div>

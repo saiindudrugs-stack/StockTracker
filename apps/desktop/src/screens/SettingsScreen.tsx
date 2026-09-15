@@ -188,6 +188,30 @@ export function SettingsScreen({
     }
   }
 
+  const [flashThresholdInput, setFlashThresholdInput] = useState("");
+  const [flashThresholdMsg, setFlashThresholdMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .getFlashThreshold()
+      .then((pct) => setFlashThresholdInput(pct.toString()))
+      .catch(() => {});
+  }, []);
+
+  async function handleSaveFlashThreshold() {
+    const value = parseFloat(flashThresholdInput);
+    if (!Number.isFinite(value) || value <= 0) {
+      setFlashThresholdMsg("Enter a positive number.");
+      return;
+    }
+    try {
+      await api.saveFlashThreshold(value);
+      setFlashThresholdMsg(`Saved — flash now triggers at ±${value}%.`);
+    } catch (e) {
+      setFlashThresholdMsg(String(e));
+    }
+  }
+
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
 
@@ -452,6 +476,29 @@ export function SettingsScreen({
           {cleanupRunning ? "Cleaning up…" : "Remove non-Indian tickers"}
         </button>
         {cleanupMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{cleanupMsg}</p>}
+      </div>
+
+      <div style={{ ...panelStyle, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Display</p>
+        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px" }}>
+          The day-move flash on Holdings/Watchlist rows — how big a move triggers the amber/green
+          blink. Was fixed at 3.5%, now yours to set.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            type="number"
+            step="0.1"
+            min="0.1"
+            value={flashThresholdInput}
+            onChange={(e) => setFlashThresholdInput(e.target.value)}
+            style={{ width: 70 }}
+          />
+          <span style={{ fontSize: 12 }}>%</span>
+          <button onClick={handleSaveFlashThreshold} disabled={!flashThresholdInput.trim()}>
+            Save
+          </button>
+        </div>
+        {flashThresholdMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{flashThresholdMsg}</p>}
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>

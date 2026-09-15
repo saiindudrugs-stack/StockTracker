@@ -56,6 +56,20 @@ pub fn annualized_volatility(returns: &[f64]) -> f64 {
     std_dev(returns) * TRADING_DAYS_PER_YEAR.sqrt()
 }
 
+/// Risk-adjusted return — was this return worth the volatility taken, not
+/// just "was it positive." `risk_free_rate_pct` is a plain percentage
+/// (e.g. 7.0 for 7%), left as a caller-supplied parameter rather than
+/// hardcoded, since the right risk-free benchmark (India: ~10-year G-Sec
+/// yield) drifts over time and isn't something this analytics module
+/// should silently bake in and go stale. Returns 0.0 when volatility is
+/// zero (no meaningful ratio, not a divide-by-zero panic).
+pub fn sharpe_ratio(annualized_return_pct: f64, annualized_volatility_pct: f64, risk_free_rate_pct: f64) -> f64 {
+    if annualized_volatility_pct == 0.0 {
+        return 0.0;
+    }
+    (annualized_return_pct - risk_free_rate_pct) / annualized_volatility_pct
+}
+
 /// Pearson correlation coefficient between two equal-length return series —
 /// the same statistic `df_pivot.corr(method='pearson')` computes in the
 /// reference article's correlation-matrix section. Returns `None` for
@@ -189,6 +203,22 @@ mod tests {
 
     fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() < tol
+    }
+
+    #[test]
+    fn sharpe_ratio_computes_excess_return_over_volatility() {
+        // 15% return, 5% risk-free, 10% volatility => (15-5)/10 = 1.0
+        assert!(approx_eq(sharpe_ratio(15.0, 10.0, 5.0), 1.0, 0.0001));
+    }
+
+    #[test]
+    fn sharpe_ratio_is_zero_not_a_panic_when_volatility_is_zero() {
+        assert_eq!(sharpe_ratio(15.0, 0.0, 5.0), 0.0);
+    }
+
+    #[test]
+    fn sharpe_ratio_is_negative_when_return_is_below_the_risk_free_rate() {
+        assert!(sharpe_ratio(3.0, 10.0, 7.0) < 0.0);
     }
 
     #[test]

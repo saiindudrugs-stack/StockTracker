@@ -26,6 +26,33 @@ export interface MarketSummaryView {
   holding_count: number;
 }
 
+export interface TaxSummaryRow {
+  symbol: string;
+  short_term_gain: string;
+  long_term_gain: string;
+}
+
+export interface TaxSummaryView {
+  rows: TaxSummaryRow[];
+  total_short_term: string;
+  total_long_term: string;
+}
+
+export interface TaxLossCandidate {
+  symbol: string;
+  quantity: string;
+  cost_price: string;
+  current_price: string;
+  unrealized_loss: string;
+  is_long_term: boolean;
+  purchase_date: string;
+}
+
+export interface TaxLossHarvestingView {
+  candidates: TaxLossCandidate[];
+  total_realized_gains_this_fy: string;
+}
+
 export interface HoldingView {
   symbol: string;
   sector: string | null;
@@ -116,6 +143,7 @@ export interface StockRiskReturn {
   symbol: string;
   annualized_return_pct: number;
   annualized_volatility_pct: number;
+  sharpe_ratio: number;
   risk_label: string;
 }
 
@@ -185,6 +213,7 @@ export interface FundamentalsView {
   dividend_yield: string | null;
   week52_high: string | null;
   week52_low: string | null;
+  volume: number | null;
   revenue_by_period: RevenuePeriodView[];
   source: string;
 }

@@ -14,8 +14,12 @@ const PLOT_HEIGHT = HEIGHT - PADDING_TOP - PADDING_BOTTOM;
 
 function CandlestickChart({ candles }: { candles: CandleView[] }) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  // [startIndex, endIndex) into the full parsed array — null means
+  // "show everything," the default. Zoom narrows this range; it never
+  // changes the underlying data, only which slice is drawn.
+  const [zoomRange, setZoomRange] = useState<[number, number] | null>(null);
 
-  const parsed = useMemo(
+  const allParsed = useMemo(
     () =>
       candles.map((c) => ({
         date: c.date,
@@ -28,7 +32,10 @@ function CandlestickChart({ candles }: { candles: CandleView[] }) {
     [candles]
   );
 
-  if (parsed.length < 2) {
+  const [zoomStart, zoomEnd] = zoomRange ?? [0, allParsed.length];
+  const parsed = allParsed.slice(zoomStart, zoomEnd);
+
+  if (allParsed.length < 2) {
     return (
       <p style={{ fontSize: 12, color: colors.textMuted }}>
         Not enough OHLC history to draw candles yet — try "Backfill Real 1Y History" above.
@@ -64,16 +71,64 @@ function CandlestickChart({ candles }: { candles: CandleView[] }) {
     setHoverIndex(idx >= 0 && idx < parsed.length ? idx : null);
   }
 
+  // Zooms around wherever the cursor currently is, not the center of the
+  // chart — scrolling in on a specific candle keeps that candle under the
+  // cursor rather than the view jumping. Clamped to a minimum 10-candle
+  // window so it can't zoom into an unreadable sliver, and to the full
+  // data range on the way back out.
+  const MIN_VISIBLE_CANDLES = 10;
+  function handleWheel(e: React.WheelEvent<SVGSVGElement>) {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const scaleX = WIDTH / rect.width;
+    const svgX = (e.clientX - rect.left) * scaleX;
+    const cursorIdxInView = Math.round((svgX - PADDING_LEFT - slotWidth / 2) / slotWidth);
+    const cursorIdxAbsolute = zoomStart + Math.max(0, Math.min(parsed.length - 1, cursorIdxInView));
+
+    const currentSpan = zoomEnd - zoomStart;
+    const zoomFactor = e.deltaY < 0 ? 0.8 : 1.25; // wheel up = zoom in, down = zoom out
+    const nextSpan = Math.round(Math.max(MIN_VISIBLE_CANDLES, Math.min(allParsed.length, currentSpan * zoomFactor)));
+
+    // Keep the same proportional position of the cursor within the new
+    // window, so the candle under the mouse stays under the mouse.
+    const cursorRatio = currentSpan > 0 ? (cursorIdxAbsolute - zoomStart) / currentSpan : 0.5;
+    let nextStart = Math.round(cursorIdxAbsolute - nextSpan * cursorRatio);
+    let nextEnd = nextStart + nextSpan;
+    if (nextStart < 0) {
+      nextEnd -= nextStart;
+      nextStart = 0;
+    }
+    if (nextEnd > allParsed.length) {
+      nextStart -= nextEnd - allParsed.length;
+      nextEnd = allParsed.length;
+    }
+    nextStart = Math.max(0, nextStart);
+
+    setZoomRange(nextSpan >= allParsed.length ? null : [nextStart, nextEnd]);
+  }
+
   const hovered = hoverIndex != null ? parsed[hoverIndex] : null;
+  const isZoomed = zoomRange != null;
 
   return (
     <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <span style={{ fontSize: 11, color: colors.textMuted }}>
+          Scroll to zoom, centered on your cursor{isZoomed ? ` — showing ${parsed.length} of ${allParsed.length} days` : ""}
+        </span>
+        {isZoomed && (
+          <button onClick={() => setZoomRange(null)} style={{ fontSize: 11, padding: "2px 8px" }}>
+            Reset zoom
+          </button>
+        )}
+      </div>
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         width="100%"
         height={HEIGHT}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoverIndex(null)}
+        onWheel={handleWheel}
         style={{ cursor: "crosshair" }}
       >
         {/* Y-axis gridlines + labels */}
@@ -223,9 +278,9 @@ export function ChartScreen() {
       <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0 }}>
         Real candlesticks (green = up day, red = down day) over up to a year of daily OHLC —
         actual open/high/low/close, not a close-only approximation. Hover anywhere on the chart
-        for the exact date and values under your cursor. New tickers auto-backfill this history
-        the moment they're added; the two original demo instruments still carry synthetic data
-        until you backfill them here.
+        for the exact date and values under your cursor; scroll to zoom in/out, centered on
+        wherever your cursor is. New tickers auto-backfill this history the moment they're added;
+        the two original demo instruments still carry synthetic data until you backfill them here.
       </p>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>

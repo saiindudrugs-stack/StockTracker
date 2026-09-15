@@ -7,7 +7,7 @@ import { ConfirmButton } from "../components/ConfirmButton";
 import { AlertSetter } from "../components/AlertSetter";
 
 type Tab = "long_term" | "intraday";
-type TxnType = "buy" | "sell";
+type TxnType = "buy" | "sell" | "dividend";
 
 const AUTO_REFRESH_MS = 30_000;
 
@@ -23,6 +23,16 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
   const [siRatePct, setSiRatePct] = useState("9.5");
   const [instruments, setInstruments] = useState<InstrumentView[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // User-configurable now (Settings) rather than a fixed 3.5% — fetched
+  // once and converted from a percentage (e.g. 3.5) to the fraction
+  // flashAnimation expects (0.035).
+  const [flashThreshold, setFlashThreshold] = useState(0.035);
+  useEffect(() => {
+    api
+      .getFlashThreshold()
+      .then((pct) => setFlashThreshold(pct / 100))
+      .catch(() => {});
+  }, []);
   const [txnType, setTxnType] = useState<TxnType>("buy");
   const [symbol, setSymbol] = useState<string>("");
   const [qty, setQty] = useState("5");
@@ -153,8 +163,13 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
     try {
       if (txnType === "buy") {
         await api.recordBuy(portfolioId, symbol, qty, price);
-      } else {
+      } else if (txnType === "sell") {
         await api.recordSell(portfolioId, symbol, qty, price);
+      } else {
+        // qty/price double as shares-held / dividend-per-share for this
+        // transaction type — same two input fields, different meaning,
+        // matching how Bonus/Split already reuse quantity/price this way.
+        await api.recordDividend(portfolioId, symbol, qty, price);
       }
       await refreshHoldings();
       setError(null);
@@ -441,7 +456,7 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
               {sortedHoldings.map((h, index) => {
                 const pnl = parseNumeric(h.unrealized_pnl);
                 const tint = dayChangeRowTint(h.day_change_pct) ?? zebraRowTint(index);
-                const flash = flashAnimation(h.day_change_pct);
+                const flash = flashAnimation(h.day_change_pct, flashThreshold);
                 const siValue = h.simple_interest_value_at_9_5_pct != null ? parseFloat(h.simple_interest_value_at_9_5_pct) : null;
                 const actualValue = h.market_value != null ? parseFloat(h.market_value) : null;
                 const beatingSi = siValue != null && actualValue != null ? actualValue - siValue : null;
@@ -613,6 +628,21 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
             >
               Sell
             </button>
+            <button
+              onClick={() => setTxnType("dividend")}
+              style={{
+                fontSize: 12,
+                padding: "4px 14px",
+                borderRadius: 6,
+                border: `1px solid ${txnType === "dividend" ? colors.accent : colors.border}`,
+                background: txnType === "dividend" ? "#E6F1FB" : "transparent",
+                color: txnType === "dividend" ? colors.accent : colors.textMuted,
+                cursor: "pointer",
+                fontWeight: txnType === "dividend" ? 600 : 400,
+              }}
+            >
+              Dividend
+            </button>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <select value={symbol} onChange={(e) => setSymbol(e.target.value)}>
@@ -623,17 +653,22 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
                 </option>
               ))}
             </select>
-            <input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Quantity" style={{ width: 80 }} />
+            <input
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              placeholder={txnType === "dividend" ? "Shares held" : "Quantity"}
+              style={{ width: 90 }}
+            />
             <input
               value={price}
               onChange={(e) => setPrice(e.target.value)}
-              placeholder="Price"
+              placeholder={txnType === "dividend" ? "₹ per share" : "Price"}
               style={{ width: 100 }}
             />
             <button
               onClick={handleRecordTransaction}
               style={{
-                background: txnType === "buy" ? colors.success : colors.danger,
+                background: txnType === "buy" ? colors.success : txnType === "sell" ? colors.danger : colors.accent,
                 color: "white",
                 border: "none",
                 borderRadius: 4,
@@ -641,13 +676,19 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
                 cursor: "pointer",
               }}
             >
-              Record {txnType === "buy" ? "Buy" : "Sell"}
+              Record {txnType === "buy" ? "Buy" : txnType === "sell" ? "Sell" : "Dividend"}
             </button>
           </div>
           {txnType === "sell" && (
             <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
               Selling more than you currently hold is rejected — it never reaches the ledger, so
               there's nothing to undo if you mistype a quantity.
+            </p>
+          )}
+          {txnType === "dividend" && (
+            <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+              Doesn't change your quantity or average cost — it's counted as cash income for XIRR,
+              same as a real dividend affects total return without touching your position size.
             </p>
           )}
         </>
