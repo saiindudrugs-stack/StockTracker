@@ -59,11 +59,7 @@ impl UpstoxProvider {
             let response = self.http.get(*url).send().await.map_err(|e| MarketDataError::RequestFailed(e.to_string()))?;
             let bytes = response.bytes().await.map_err(|e| MarketDataError::RequestFailed(e.to_string()))?;
 
-            let mut decoder = GzDecoder::new(&bytes[..]);
-            let mut json_text = String::new();
-            decoder
-                .read_to_string(&mut json_text)
-                .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't decompress {exchange} instrument file: {e}")))?;
+            let json_text = decode_instrument_file_bytes(&bytes, exchange)?;
 
             let rows: Vec<RawInstrumentRow> = serde_json::from_str(&json_text)
                 .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't parse {exchange} instrument file: {e}")))?;
@@ -147,6 +143,32 @@ impl UpstoxProvider {
 
     pub fn http_client(&self) -> &Client {
         &self.http
+    }
+}
+
+/// Real failure this fixes: "invalid gzip header". reqwest's own `gzip`
+/// feature (enabled for this exact file) transparently decompresses the
+/// response whenever the server sends `Content-Encoding: gzip` —
+/// independent of whether the file itself is a .gz file. If Upstox's CDN
+/// sets that header (common for object-storage/CDN-served static assets,
+/// even ones whose filename already ends in .gz), reqwest hands back
+/// already-decompressed JSON bytes, and running those back through
+/// GzDecoder fails since they're no longer actually gzip-formatted.
+/// Checking the real gzip magic bytes (0x1f 0x8b) up front handles either
+/// case correctly instead of assuming one. Extracted as a standalone
+/// function so both code paths are directly testable without needing a
+/// live HTTP response.
+fn decode_instrument_file_bytes(bytes: &[u8], exchange: &str) -> Result<String, MarketDataError> {
+    if bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b {
+        let mut decoder = GzDecoder::new(bytes);
+        let mut text = String::new();
+        decoder
+            .read_to_string(&mut text)
+            .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't decompress {exchange} instrument file: {e}")))?;
+        Ok(text)
+    } else {
+        String::from_utf8(bytes.to_vec())
+            .map_err(|e| MarketDataError::UnexpectedResponse(format!("{exchange} instrument file wasn't gzip or valid UTF-8 text: {e}")))
     }
 }
 
@@ -271,6 +293,41 @@ struct CandleData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn decodes_real_gzip_bytes_correctly() {
+        let original = r#"[{"trading_symbol": "RELIANCE"}]"#;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(original.as_bytes()).unwrap();
+        let gzipped = encoder.finish().unwrap();
+
+        let decoded = decode_instrument_file_bytes(&gzipped, "NSE").unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn falls_back_to_plain_text_when_bytes_are_not_actually_gzip() {
+        // Reproduces the real failure: reqwest's own gzip feature already
+        // decompressed the transport encoding, leaving plain JSON bytes
+        // that don't start with the gzip magic number.
+        let plain_json = r#"[{"trading_symbol": "RELIANCE"}]"#;
+        let decoded = decode_instrument_file_bytes(plain_json.as_bytes(), "NSE").unwrap();
+        assert_eq!(decoded, plain_json);
+    }
+
+    #[test]
+    fn neither_gzip_nor_valid_utf8_is_a_clear_error_not_a_panic() {
+        let garbage = vec![0xff, 0xfe, 0x00, 0x01];
+        let result = decode_instrument_file_bytes(&garbage, "NSE");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_bytes_is_treated_as_empty_text_not_a_panic() {
+        let decoded = decode_instrument_file_bytes(&[], "NSE").unwrap();
+        assert_eq!(decoded, "");
+    }
 
     #[test]
     fn parses_a_real_shaped_quote_response() {
