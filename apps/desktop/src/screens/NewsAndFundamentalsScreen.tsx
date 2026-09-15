@@ -174,31 +174,41 @@ export function NewsAndFundamentalsScreen() {
               <p style={{ fontSize: 12, color: colors.textMuted }}>No news found for this symbol.</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {news.map((n, i) => (
-                  <a
-                    key={i}
-                    href={n.link}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{
-                      display: "block",
-                      padding: "6px 10px",
-                      borderLeft: `3px solid ${n.is_regulatory ? "#854F0B" : colors.border}`,
-                      background: n.is_regulatory ? "#FAEEDA" : "transparent",
-                      borderRadius: "0 4px 4px 0",
-                      textDecoration: "none",
-                      color: "inherit",
-                    }}
-                  >
-                    {n.is_regulatory && (
-                      <div style={{ fontSize: 9, color: "#633806", fontWeight: 600 }}>REGULATORY</div>
-                    )}
-                    <div style={{ fontSize: 12 }}>{n.title}</div>
-                    <div style={{ fontSize: 10, color: colors.textMuted }}>
-                      {n.publisher} · {n.published_at}
+                {news.map((n, i) => {
+                  const content = (
+                    <>
+                      {n.is_regulatory && (
+                        <div style={{ fontSize: 9, color: "#633806", fontWeight: 600 }}>REGULATORY</div>
+                      )}
+                      <div style={{ fontSize: 12 }}>{n.title}</div>
+                      <div style={{ fontSize: 10, color: colors.textMuted }}>
+                        {n.publisher} · {n.published_at}
+                      </div>
+                    </>
+                  );
+                  const sharedStyle = {
+                    display: "block" as const,
+                    padding: "6px 10px",
+                    borderLeft: `3px solid ${n.is_regulatory ? "#854F0B" : colors.border}`,
+                    background: n.is_regulatory ? "#FAEEDA" : "transparent",
+                    borderRadius: "0 4px 4px 0" as const,
+                  };
+                  // Many NSE/BSE filing categories (postal ballots, some
+                  // press releases) genuinely carry no PDF attachment —
+                  // rendering those as a dead `href=""` link is what read
+                  // as "not hyperlinked to any details." A plain,
+                  // non-interactive block is the honest rendering when
+                  // there's nowhere real to send the click.
+                  return n.link ? (
+                    <a key={i} href={n.link} target="_blank" rel="noreferrer" style={{ ...sharedStyle, textDecoration: "none", color: "inherit" }}>
+                      {content}
+                    </a>
+                  ) : (
+                    <div key={i} style={sharedStyle}>
+                      {content}
                     </div>
-                  </a>
-                ))}
+                  );
+                })}
               </div>
             )}
           </>

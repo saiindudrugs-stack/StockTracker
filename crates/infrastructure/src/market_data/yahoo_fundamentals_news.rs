@@ -197,6 +197,8 @@ struct NewsRaw {
     link: String,
     #[serde(rename = "providerPublishTime")]
     provider_publish_time: i64,
+    #[serde(rename = "relatedTickers", default)]
+    related_tickers: Vec<String>,
 }
 
 impl YahooFinanceProvider {
@@ -275,10 +277,25 @@ impl YahooFinanceProvider {
             MarketDataError::UnexpectedResponse(format!("couldn't parse Yahoo news search for {yahoo_symbol}: {e}"))
         })?;
 
+        let bare_symbol = symbol.to_uppercase();
         let mut items: Vec<NewsItem> = body
             .news
             .unwrap_or_default()
             .into_iter()
+            // Yahoo's search endpoint fills in generic/trending results
+            // as filler when a specific ticker has little dedicated
+            // coverage (confirmed behavior for smaller/less-covered
+            // stocks) — relatedTickers is Yahoo's own signal for which
+            // symbols an article is actually about, so this keeps only
+            // items that signal actually names this one. Matches either
+            // the plain symbol or the full Yahoo-suffixed form, since
+            // it's unconfirmed which form Yahoo's relatedTickers uses.
+            .filter(|n| {
+                n.related_tickers.iter().any(|t| {
+                    let t = t.to_uppercase();
+                    t == bare_symbol || t == yahoo_symbol.to_uppercase()
+                })
+            })
             .filter_map(|n| {
                 Some(NewsItem {
                     is_regulatory: looks_regulatory(&n.title),
@@ -306,6 +323,20 @@ impl YahooFinanceProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn news_raw_captures_related_tickers_when_present() {
+        let sample = r#"{"title": "Some article", "publisher": "Reuters", "link": "https://x.com", "providerPublishTime": 123, "relatedTickers": ["AUROPHARMA.NS", "SUNPHARMA.NS"]}"#;
+        let parsed: NewsRaw = serde_json::from_str(sample).unwrap();
+        assert_eq!(parsed.related_tickers, vec!["AUROPHARMA.NS", "SUNPHARMA.NS"]);
+    }
+
+    #[test]
+    fn news_raw_defaults_related_tickers_to_empty_when_absent() {
+        let sample = r#"{"title": "Some article", "publisher": "Reuters", "link": "https://x.com", "providerPublishTime": 123}"#;
+        let parsed: NewsRaw = serde_json::from_str(sample).unwrap();
+        assert_eq!(parsed.related_tickers.len(), 0);
+    }
 
     #[test]
     fn regulatory_keywords_are_matched_case_insensitively() {

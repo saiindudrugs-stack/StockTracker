@@ -43,12 +43,23 @@ impl BseAnnouncementsClient {
             .header("Accept", "application/json, text/plain, */*")
             .header("Origin", "https://www.bseindia.com")
             .header("Referer", "https://www.bseindia.com/")
+            // These four are present in a real, confirmed-working code
+            // sample hitting this exact host — added after a real
+            // failure ("expected value at line 1 column 1", meaning the
+            // body wasn't valid JSON at all) suggested the request
+            // without them wasn't being treated as a genuine browser
+            // request by BSE's server.
+            .header("sec-ch-ua-mobile", "?0")
+            .header("sec-fetch-site", "same-site")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-dest", "empty")
             .send()
             .await
             .map_err(|e| MarketDataError::RequestFailed(format!("BSE scrip code lookup failed: {e}")))?;
 
+        let status = response.status();
         let text = response.text().await.map_err(|e| MarketDataError::RequestFailed(e.to_string()))?;
-        parse_scrip_code_from_response(&text, symbol)
+        parse_scrip_code_from_response(&text, symbol, status)
     }
 
     pub async fn fetch_announcements(&self, symbol: &str) -> Result<Vec<RegulatoryAnnouncement>, MarketDataError> {
@@ -71,7 +82,7 @@ impl BseAnnouncementsClient {
             .await
             .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't parse BSE announcements for {symbol}: {e}")))?;
 
-        Ok(body
+        let mut items: Vec<RegulatoryAnnouncement> = body
             .table
             .into_iter()
             .map(|r| RegulatoryAnnouncement {
@@ -80,7 +91,16 @@ impl BseAnnouncementsClient {
                 broadcast_date: r.news_dt.or(r.dissem_dt).unwrap_or_default(),
                 attachment_url: r.attachment_name,
             })
-            .collect())
+            .collect();
+        // Page 1 of BSE's own pagination is usually already a reasonable
+        // size, but this caps it defensively regardless — same 20-item
+        // limit as NSE, for consistency. BSE's NEWS_DT format is ISO-like
+        // (e.g. "2026-09-15T18:30:00"), which — unlike NSE's "DD-Mon-
+        // YYYY" format — sorts correctly as a plain string, so no
+        // separate date-parsing step is needed here.
+        items.sort_by(|a, b| b.broadcast_date.cmp(&a.broadcast_date));
+        items.truncate(20);
+        Ok(items)
     }
 }
 
@@ -95,7 +115,7 @@ impl Default for BseAnnouncementsClient {
 /// wrapping the array, since real BSE endpoints have been observed doing
 /// either depending on the specific one. Whichever shape doesn't match
 /// just means an empty result here, not a panic.
-fn parse_scrip_code_from_response(text: &str, symbol: &str) -> Result<String, MarketDataError> {
+fn parse_scrip_code_from_response(text: &str, symbol: &str, status: reqwest::StatusCode) -> Result<String, MarketDataError> {
     #[derive(Deserialize)]
     struct ScripRow {
         #[serde(rename = "scrip_cd", alias = "Scrip_Cd", alias = "SCRIP_CD")]
@@ -108,8 +128,16 @@ fn parse_scrip_code_from_response(text: &str, symbol: &str) -> Result<String, Ma
         Wrapped { #[serde(rename = "Table")] table: Vec<ScripRow> },
     }
 
-    let parsed: ScripResponse = serde_json::from_str(text)
-        .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't parse BSE scrip code search for {symbol}: {e}")))?;
+    let parsed: ScripResponse = serde_json::from_str(text).map_err(|e| {
+        // A truncated snippet of the actual body — this is what should
+        // have shown up in the last real failure instead of a bare parse
+        // error, since "was it empty, HTML, or something else" is the
+        // actual next question to answer.
+        let snippet: String = text.chars().take(200).collect();
+        MarketDataError::UnexpectedResponse(format!(
+            "couldn't parse BSE scrip code search for {symbol}: {e} (HTTP {status}, body started with: {snippet:?})"
+        ))
+    })?;
     let rows = match parsed {
         ScripResponse::Array(rows) => rows,
         ScripResponse::Wrapped { table } => table,
@@ -117,7 +145,7 @@ fn parse_scrip_code_from_response(text: &str, symbol: &str) -> Result<String, Ma
     rows.into_iter()
         .find_map(|r| r.scrip_cd)
         .map(|v| v.to_string().trim_matches('"').to_string())
-        .ok_or_else(|| MarketDataError::NoData(format!("{symbol}: no BSE scrip code found")))
+        .ok_or_else(|| MarketDataError::NoData(format!("{symbol}: no BSE scrip code found (HTTP {status})")))
 }
 
 #[derive(Deserialize)]
@@ -147,22 +175,30 @@ mod tests {
     #[test]
     fn parses_a_plain_array_scrip_code_response() {
         let sample = r#"[{"scrip_cd": 532540, "Scrip_Name": "TCS"}]"#;
-        let code = parse_scrip_code_from_response(sample, "TCS").unwrap();
+        let code = parse_scrip_code_from_response(sample, "TCS", reqwest::StatusCode::OK).unwrap();
         assert_eq!(code, "532540");
     }
 
     #[test]
     fn parses_a_table_wrapped_scrip_code_response() {
         let sample = r#"{"Table": [{"scrip_cd": 500325}]}"#;
-        let code = parse_scrip_code_from_response(sample, "RELIANCE").unwrap();
+        let code = parse_scrip_code_from_response(sample, "RELIANCE", reqwest::StatusCode::OK).unwrap();
         assert_eq!(code, "500325");
     }
 
     #[test]
     fn no_matching_scrip_code_is_a_clear_error_not_a_panic() {
         let sample = r#"[]"#;
-        let result = parse_scrip_code_from_response(sample, "NOPE");
+        let result = parse_scrip_code_from_response(sample, "NOPE", reqwest::StatusCode::OK);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_json_produces_a_diagnostic_error_with_status_and_body_snippet() {
+        let sample = "";
+        let result = parse_scrip_code_from_response(sample, "RELIANCE", reqwest::StatusCode::FORBIDDEN);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("403"), "error should include the HTTP status: {err}");
     }
 
     #[test]

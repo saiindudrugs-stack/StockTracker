@@ -109,7 +109,7 @@ impl NseAnnouncementsClient {
             .await
             .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't parse NSE announcements for {symbol}: {e}")))?;
 
-        Ok(rows
+        let mut items: Vec<RegulatoryAnnouncement> = rows
             .into_iter()
             .filter_map(|r| {
                 Some(RegulatoryAnnouncement {
@@ -119,7 +119,18 @@ impl NseAnnouncementsClient {
                     attachment_url: r.attchment_file,
                 })
             })
-            .collect())
+            .collect();
+        // NSE's endpoint returns every announcement ever filed for a
+        // symbol with no date-range parameter honored by default — real
+        // stocks can have 20+ years of history. Newest first, capped at
+        // 20, same reasoning as every other "top N" list in this app.
+        // Sorted by an actually-parsed date, not the raw string — NSE's
+        // "DD-Mon-YYYY HH:MM:SS" format sorts WRONG lexicographically
+        // (e.g. "15-Sep-2026" would sort before "22-Mar-2005" as plain
+        // text, since '1' < '2', even though 2026 is later).
+        items.sort_by_key(|a| std::cmp::Reverse(chrono::NaiveDateTime::parse_from_str(&a.broadcast_date, "%d-%b-%Y %H:%M:%S").ok()));
+        items.truncate(20);
+        Ok(items)
     }
 }
 
