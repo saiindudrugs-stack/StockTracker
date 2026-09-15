@@ -321,45 +321,65 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
     let mut view = if let Some(v) = try_upstox_fundamentals(&state, &instrument.symbol, &instrument.exchange).await {
         v
     } else {
-        let f = state
-            .yahoo_direct
-            .fetch_fundamentals(&instrument.symbol, &instrument.exchange)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        FundamentalsView {
-            sector: f.sector,
-            industry: f.industry,
-            description: f.description,
-            market_cap: f.market_cap.map(|d| d.to_string()),
-            pe_ratio: f.pe_ratio.map(|d| d.to_string()),
-            pb_ratio: None,
-            roe: None,
-            roce: None,
-            dividend_yield: f.dividend_yield.map(|d| d.to_string()),
-            week52_high: f.week52_high.map(|d| d.to_string()),
-            week52_low: f.week52_low.map(|d| d.to_string()),
-            volume: None,
-            revenue_by_period: f
-                .revenue_by_period
-                .into_iter()
-                .map(|p| RevenuePeriodView { period_end: p.period_end, revenue: p.revenue.to_string(), net_income: p.net_income.map(|d| d.to_string()) })
-                .collect(),
-            source: "yahoo".to_string(),
+        // A Yahoo failure here used to abort the whole command via `?`
+        // before Alpha Vantage ever got a chance to run as a fallback —
+        // a real bug: when both Upstox (unconfigured) and Yahoo (endpoint
+        // unreliable) failed, the user got nothing at all even with a
+        // working Alpha Vantage key sitting right there. Now a Yahoo
+        // failure just produces an empty view and keeps going; the
+        // gap-fill step below is what actually has a chance to populate
+        // it from Alpha Vantage instead.
+        match state.yahoo_direct.fetch_fundamentals(&instrument.symbol, &instrument.exchange).await {
+            Ok(f) => FundamentalsView {
+                sector: f.sector,
+                industry: f.industry,
+                description: f.description,
+                market_cap: f.market_cap.map(|d| d.to_string()),
+                pe_ratio: f.pe_ratio.map(|d| d.to_string()),
+                pb_ratio: None,
+                roe: None,
+                roce: None,
+                dividend_yield: f.dividend_yield.map(|d| d.to_string()),
+                week52_high: f.week52_high.map(|d| d.to_string()),
+                week52_low: f.week52_low.map(|d| d.to_string()),
+                volume: None,
+                revenue_by_period: f
+                    .revenue_by_period
+                    .into_iter()
+                    .map(|p| RevenuePeriodView { period_end: p.period_end, revenue: p.revenue.to_string(), net_income: p.net_income.map(|d| d.to_string()) })
+                    .collect(),
+                source: "yahoo".to_string(),
+            },
+            Err(_) => FundamentalsView {
+                sector: None,
+                industry: None,
+                description: None,
+                market_cap: None,
+                pe_ratio: None,
+                pb_ratio: None,
+                roe: None,
+                roce: None,
+                dividend_yield: None,
+                week52_high: None,
+                week52_low: None,
+                volume: None,
+                revenue_by_period: Vec::new(),
+                source: "none".to_string(),
+            },
         }
     };
 
-    // Gap-fill only, never overwrite: neither Upstox's Fundamentals API
-    // nor Yahoo's fetch reliably return market cap (Upstox never does;
-    // Yahoo's has been unreliable) — one lightweight Alpha Vantage
-    // OVERVIEW call fills in whatever's still missing, without disturbing
-    // anything the primary source already answered. Silently skipped if
-    // no Alpha Vantage key is configured or the call itself fails — this
-    // is a nice-to-have layer, not something that should block the rest
-    // of the response.
+    // Gap-fill AND genuine fallback: when the primary source (Upstox or
+    // Yahoo) came back completely empty (source == "none", i.e. both
+    // failed), Alpha Vantage is the ONLY thing standing between the user
+    // and nothing at all — this is exactly the situation that was
+    // silently broken before (Yahoo failing used to abort before this
+    // code ever ran). Also still gap-fills a partially-successful view,
+    // same as before.
     if view.market_cap.is_none() || view.dividend_yield.is_none() || view.week52_high.is_none() {
         let av = AlphaVantageProvider::new(state.app_settings.clone());
         if let Ok(overview) = av.fetch_overview(&instrument.symbol, &instrument.exchange).await {
+            let was_empty = view.source == "none";
             view.market_cap = view.market_cap.or(overview.market_cap.map(|v| v.to_string()));
             view.dividend_yield = view.dividend_yield.or(overview.dividend_yield.map(|v| v.to_string()));
             view.week52_high = view.week52_high.or(overview.week52_high.map(|v| v.to_string()));
@@ -367,6 +387,9 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
             view.sector = view.sector.or(overview.sector);
             view.industry = view.industry.or(overview.industry);
             view.description = view.description.or(overview.description);
+            if was_empty {
+                view.source = "alpha_vantage".to_string();
+            }
         }
     }
 
@@ -377,6 +400,17 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
     // same as every other optional field in this view.
     if let Ok(quote) = state.market_data.fetch_quote(&instrument.symbol, &instrument.exchange).await {
         view.volume = quote.volume;
+    }
+
+    // Genuinely nothing from any of the three sources — return a real
+    // error here (not a silently-empty "successful" view) so the
+    // frontend's existing calm "fundamentals aren't available" message
+    // still shows correctly. This now only triggers when Upstox, Yahoo,
+    // AND Alpha Vantage have all failed or aren't configured — not
+    // whenever just one of them has an off day, which is what used to
+    // happen.
+    if view.source == "none" {
+        return Err(format!("{symbol}: no fundamentals available from Upstox, Yahoo, or Alpha Vantage"));
     }
 
     Ok(view)

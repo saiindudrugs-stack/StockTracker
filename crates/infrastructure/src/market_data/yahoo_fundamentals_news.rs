@@ -95,11 +95,20 @@ pub fn looks_regulatory(title: &str) -> bool {
 
 #[derive(Deserialize)]
 struct QuoteSummaryResponse {
-    #[serde(rename = "quoteSummary")]
+    // Regression fix, same class as the earlier chart-endpoint bug: a
+    // real failure showed "missing field `quoteSummary`" very early in a
+    // short response (column 89), meaning Yahoo returned a genuinely
+    // different top-level shape for this specific request — quoteSummary
+    // is known to sometimes require session/crumb auth that a plain GET
+    // doesn't provide, unlike the chart endpoint used for quotes. #[serde
+    // (default)] means a missing key degrades to "no fundamentals from
+    // Yahoo" (caller falls back to Alpha Vantage) instead of failing the
+    // whole request.
+    #[serde(rename = "quoteSummary", default)]
     quote_summary: QuoteSummaryWrapper,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct QuoteSummaryWrapper {
     result: Option<Vec<QuoteSummaryResult>>,
     error: Option<YahooApiError>,
@@ -144,7 +153,7 @@ struct SummaryDetail {
 
 #[derive(Deserialize)]
 struct IncomeStatementHistory {
-    #[serde(rename = "incomeStatementHistory")]
+    #[serde(rename = "incomeStatementHistory", default)]
     income_statement_history: Vec<IncomeStatementPeriod>,
 }
 
@@ -372,6 +381,28 @@ mod tests {
         assert_eq!(result.asset_profile.unwrap().sector.as_deref(), Some("Technology"));
         assert_eq!(raw_to_decimal(&result.summary_detail.unwrap().market_cap), Decimal::try_from(1000000.0).ok());
         assert_eq!(result.income_statement_history.unwrap().income_statement_history.len(), 2);
+    }
+
+    /// Regression test for a real reported failure: "missing field
+    /// `quoteSummary`" broke fundamentals fetching entirely for a real
+    /// symbol. Whatever Yahoo actually returned for that request didn't
+    /// have this key at the top level at all (quoteSummary is known to
+    /// sometimes require session/crumb auth a plain GET doesn't have) —
+    /// this must degrade to "no fundamentals," not a hard parse failure.
+    #[test]
+    fn parses_successfully_even_when_quote_summary_key_is_missing_entirely() {
+        let sample = r#"{"someOtherShape": {"unrelated": true}}"#;
+        let parsed: QuoteSummaryResponse = serde_json::from_str(sample).unwrap();
+        assert!(parsed.quote_summary.result.is_none());
+        assert!(parsed.quote_summary.error.is_none());
+    }
+
+    #[test]
+    fn parses_successfully_even_when_income_statement_array_is_omitted() {
+        let sample = r#"{"quoteSummary": {"result": [{"incomeStatementHistory": {}}], "error": null}}"#;
+        let parsed: QuoteSummaryResponse = serde_json::from_str(sample).unwrap();
+        let result = parsed.quote_summary.result.unwrap().into_iter().next().unwrap();
+        assert_eq!(result.income_statement_history.unwrap().income_statement_history.len(), 0);
     }
 
     #[test]
