@@ -199,7 +199,7 @@ export const api = {
   // reasoning as getMarketSnapshot.
   listEquityInstruments: () => invoke<InstrumentView[]>("list_equity_instruments"),
   getFundamentals: (symbol: string) => invoke<FundamentalsView>("get_fundamentals", { symbol }),
-  getStockNews: (symbol: string) => invoke<NewsItemView[]>("get_stock_news", { symbol }),
+  getStockNews: (symbol: string, limit: number) => invoke<NewsItemView[]>("get_stock_news", { symbol, limit }),
 };
 
 export interface LivePriceTick {

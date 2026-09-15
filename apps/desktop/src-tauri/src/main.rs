@@ -481,7 +481,7 @@ struct NewsItemView {
 /// same "always still works with zero Upstox setup" reasoning as
 /// get_fundamentals.
 #[tauri::command]
-async fn get_stock_news(state: State<'_, AppState>, symbol: String) -> Result<Vec<NewsItemView>, String> {
+async fn get_stock_news(state: State<'_, AppState>, symbol: String, limit: usize) -> Result<Vec<NewsItemView>, String> {
     let instrument = state
         .instruments
         .find_by_symbol(&symbol)
@@ -501,26 +501,27 @@ async fn get_stock_news(state: State<'_, AppState>, symbol: String) -> Result<Ve
         "NSE" => {
             let client = pm_infrastructure::market_data::nse_announcements::NseAnnouncementsClient::new();
             if let Ok(rows) = client.fetch_announcements(&instrument.symbol).await {
-                regulatory_items.extend(rows.into_iter().map(regulatory_to_news_item));
+                regulatory_items.extend(rows.into_iter().map(|r| regulatory_to_news_item(r, "NSE")));
             }
         }
         "BSE" => {
             let client = pm_infrastructure::market_data::bse_announcements::BseAnnouncementsClient::new();
             if let Ok(rows) = client.fetch_announcements(&instrument.symbol).await {
-                regulatory_items.extend(rows.into_iter().map(regulatory_to_news_item));
+                regulatory_items.extend(rows.into_iter().map(|r| regulatory_to_news_item(r, "BSE")));
             }
         }
         _ => {}
     }
 
-    if let Some(items) = try_upstox_news(&state, &instrument.symbol, &instrument.exchange).await {
+    if let Some(items) = try_upstox_news(&state, &instrument.symbol, &instrument.exchange, limit).await {
         regulatory_items.extend(items);
+        regulatory_items.truncate(limit);
         return Ok(regulatory_items);
     }
 
     let news = state
         .yahoo_direct
-        .fetch_news(&instrument.symbol, &instrument.exchange)
+        .fetch_news(&instrument.symbol, &instrument.exchange, limit)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -531,14 +532,27 @@ async fn get_stock_news(state: State<'_, AppState>, symbol: String) -> Result<Ve
         published_at: n.published_at.format("%Y-%m-%d %H:%M UTC").to_string(),
         is_regulatory: n.is_regulatory,
     }));
+    regulatory_items.truncate(limit);
     Ok(regulatory_items)
 }
 
-fn regulatory_to_news_item(a: pm_infrastructure::market_data::nse_announcements::RegulatoryAnnouncement) -> NewsItemView {
+/// Falls back to the exchange's own public page for this symbol when
+/// there's no specific attachment URL — real evidence from a live test
+/// showed every item in a real batch came back with no attachment link
+/// at all (the exact field NSE returns this under isn't confirmed;
+/// rather than keep guessing field names blind, this guarantees every
+/// item has SOMEWHERE real to click through to regardless of whether
+/// that specific field guess is right).
+fn regulatory_to_news_item(a: pm_infrastructure::market_data::nse_announcements::RegulatoryAnnouncement, exchange: &str) -> NewsItemView {
+    let fallback_link = if exchange.eq_ignore_ascii_case("BSE") {
+        "https://www.bseindia.com/corporates/ann.html".to_string()
+    } else {
+        format!("https://www.nseindia.com/get-quotes/equity?symbol={}", a.symbol)
+    };
     NewsItemView {
         title: a.subject,
         publisher: "NSE/BSE (verified filing)".to_string(),
-        link: a.attachment_url.unwrap_or_default(),
+        link: a.attachment_url.filter(|u| !u.is_empty()).unwrap_or(fallback_link),
         published_at: a.broadcast_date,
         is_regulatory: true,
     }
@@ -548,13 +562,13 @@ fn regulatory_to_news_item(a: pm_infrastructure::market_data::nse_announcements:
 /// try_upstox_fundamentals. Resolves instrument_key (not ISIN — the News
 /// API takes instrument_key, the Fundamentals API takes ISIN, different
 /// identifiers for the same underlying instrument).
-async fn try_upstox_news(state: &State<'_, AppState>, symbol: &str, exchange: &str) -> Option<Vec<NewsItemView>> {
+async fn try_upstox_news(state: &State<'_, AppState>, symbol: &str, exchange: &str, limit: usize) -> Option<Vec<NewsItemView>> {
     let token = state.app_settings.get(UPSTOX_ANALYTICS_TOKEN_SETTING).await.ok().flatten()?;
     if token.trim().is_empty() {
         return None;
     }
     let instrument_key = state.upstox_instruments.get_instrument_key(symbol, exchange).await.ok().flatten()?;
-    let items = state.upstox_fundamentals.fetch_news(&instrument_key, &token, 5).await.ok()?;
+    let items = state.upstox_fundamentals.fetch_news(&instrument_key, &token, limit).await.ok()?;
 
     Some(
         items

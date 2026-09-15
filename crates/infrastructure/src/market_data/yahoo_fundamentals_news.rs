@@ -263,7 +263,7 @@ impl YahooFinanceProvider {
         })
     }
 
-    pub async fn fetch_news(&self, symbol: &str, exchange: &str) -> Result<Vec<NewsItem>, MarketDataError> {
+    pub async fn fetch_news(&self, symbol: &str, exchange: &str, limit: usize) -> Result<Vec<NewsItem>, MarketDataError> {
         let yahoo_symbol = Self::to_yahoo_symbol(symbol, exchange);
         let url = format!("https://query1.finance.yahoo.com/v1/finance/search?q={yahoo_symbol}&newsCount=15");
         let response = self
@@ -308,14 +308,14 @@ impl YahooFinanceProvider {
             .collect();
 
         // Regulatory items first (newest first within each group), then
-        // everything else, newest first — then cap at 5 per the "top 5,
-        // priority to regulatory submissions" requirement.
+        // everything else, newest first — then cap at the caller's
+        // chosen limit (default 5, user-adjustable via a dropdown).
         items.sort_by(|a, b| match (a.is_regulatory, b.is_regulatory) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             _ => b.published_at.cmp(&a.published_at),
         });
-        items.truncate(5);
+        items.truncate(limit);
         Ok(items)
     }
 }

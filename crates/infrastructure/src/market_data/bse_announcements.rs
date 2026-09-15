@@ -115,7 +115,25 @@ impl Default for BseAnnouncementsClient {
 /// wrapping the array, since real BSE endpoints have been observed doing
 /// either depending on the specific one. Whichever shape doesn't match
 /// just means an empty result here, not a panic.
+/// Confirmed via a real failure's diagnostic output: this endpoint
+/// doesn't return JSON at all — it returns an HTML autocomplete/search-
+/// suggestion fragment, e.g.:
+///   <li class='quotemenu quotemenuselect'><a id='...' href='/stock-
+///   share-price/reliance-industries-ltd/reliance/500325/'><strong>
+///   RELIANCE</strong> I...
+/// The scrip code is the last numeric path segment in that href
+/// (`500325` above). This replaces the original JSON-parsing attempt,
+/// which was a reasonable guess before there was a real response to
+/// check it against — now there is.
 fn parse_scrip_code_from_response(text: &str, symbol: &str, status: reqwest::StatusCode) -> Result<String, MarketDataError> {
+    if let Some(code) = extract_scrip_code_from_html(text) {
+        return Ok(code);
+    }
+
+    // Fallback: in case a different environment/time genuinely gets a
+    // JSON response instead (some BSE endpoints do respond in either
+    // shape depending on headers), still try parsing that too, rather
+    // than assuming HTML is the only possible shape forever.
     #[derive(Deserialize)]
     struct ScripRow {
         #[serde(rename = "scrip_cd", alias = "Scrip_Cd", alias = "SCRIP_CD")]
@@ -127,25 +145,41 @@ fn parse_scrip_code_from_response(text: &str, symbol: &str, status: reqwest::Sta
         Array(Vec<ScripRow>),
         Wrapped { #[serde(rename = "Table")] table: Vec<ScripRow> },
     }
+    if let Ok(parsed) = serde_json::from_str::<ScripResponse>(text) {
+        let rows = match parsed {
+            ScripResponse::Array(rows) => rows,
+            ScripResponse::Wrapped { table } => table,
+        };
+        if let Some(code) = rows.into_iter().find_map(|r| r.scrip_cd) {
+            return Ok(code.to_string().trim_matches('"').to_string());
+        }
+    }
 
-    let parsed: ScripResponse = serde_json::from_str(text).map_err(|e| {
-        // A truncated snippet of the actual body — this is what should
-        // have shown up in the last real failure instead of a bare parse
-        // error, since "was it empty, HTML, or something else" is the
-        // actual next question to answer.
-        let snippet: String = text.chars().take(200).collect();
-        MarketDataError::UnexpectedResponse(format!(
-            "couldn't parse BSE scrip code search for {symbol}: {e} (HTTP {status}, body started with: {snippet:?})"
-        ))
-    })?;
-    let rows = match parsed {
-        ScripResponse::Array(rows) => rows,
-        ScripResponse::Wrapped { table } => table,
-    };
-    rows.into_iter()
-        .find_map(|r| r.scrip_cd)
-        .map(|v| v.to_string().trim_matches('"').to_string())
-        .ok_or_else(|| MarketDataError::NoData(format!("{symbol}: no BSE scrip code found (HTTP {status})")))
+    let snippet: String = text.chars().take(200).collect();
+    Err(MarketDataError::UnexpectedResponse(format!(
+        "couldn't find a BSE scrip code for {symbol} in either HTML or JSON shape (HTTP {status}, body started with: {snippet:?})"
+    )))
+}
+
+/// Looks for `href='.../{slug}/{digits}/'` (or double-quoted) and returns
+/// the digit segment — BSE's own search-suggestion markup encodes the
+/// scrip code as the final path segment of the stock's detail-page URL.
+fn extract_scrip_code_from_html(html: &str) -> Option<String> {
+    for quote in ['\'', '"'] {
+        let needle = format!("href={quote}");
+        let mut search_from = 0;
+        while let Some(start) = html[search_from..].find(&needle) {
+            let href_start = search_from + start + needle.len();
+            let Some(end_offset) = html[href_start..].find(quote) else { break };
+            let href = &html[href_start..href_start + end_offset];
+            let last_segment = href.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+            if !last_segment.is_empty() && last_segment.chars().all(|c| c.is_ascii_digit()) {
+                return Some(last_segment.to_string());
+            }
+            search_from = href_start + end_offset;
+        }
+    }
+    None
 }
 
 #[derive(Deserialize)]
@@ -184,6 +218,22 @@ mod tests {
         let sample = r#"{"Table": [{"scrip_cd": 500325}]}"#;
         let code = parse_scrip_code_from_response(sample, "RELIANCE", reqwest::StatusCode::OK).unwrap();
         assert_eq!(code, "500325");
+    }
+
+    #[test]
+    fn extracts_scrip_code_from_the_real_html_response_captured_live() {
+        // Verbatim (truncated) from a real failure's diagnostic output —
+        // BSE's actual response shape, not a guess.
+        let html = "<li class='quotemenu quotemenuselect'><a id='/stock-share-price/reliance-industries-ltd/reliance-industries-ltd/reliance/500325/' href='/stock-share-price/reliance-industries-ltd/reliance/500325/'><strong>RELIANCE</strong> I";
+        let code = parse_scrip_code_from_response(html, "RELIANCE", reqwest::StatusCode::OK).unwrap();
+        assert_eq!(code, "500325");
+    }
+
+    #[test]
+    fn extracts_scrip_code_with_double_quoted_href() {
+        let html = r#"<a href="/stock-share-price/tata-consultancy/tcs/532540/">TCS</a>"#;
+        let code = parse_scrip_code_from_response(html, "TCS", reqwest::StatusCode::OK).unwrap();
+        assert_eq!(code, "532540");
     }
 
     #[test]

@@ -6,6 +6,7 @@ import { colors, panelStyle, fmtMoney } from "../lib/theme";
 export function NewsAndFundamentalsScreen() {
   const [instruments, setInstruments] = useState<InstrumentView[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [newsLimit, setNewsLimit] = useState(5);
   const [fundamentals, setFundamentals] = useState<FundamentalsView | null>(null);
   const [fundamentalsError, setFundamentalsError] = useState<string | null>(null);
   const [news, setNews] = useState<NewsItemView[]>([]);
@@ -44,11 +45,11 @@ export function NewsAndFundamentalsScreen() {
       .catch((e) => setFundamentalsError(String(e)));
 
     api
-      .getStockNews(selected)
+      .getStockNews(selected, newsLimit)
       .then(setNews)
       .catch((e) => setNewsError(String(e)))
       .finally(() => setLoading(false));
-  }, [selected]);
+  }, [selected, newsLimit]);
 
   return (
     <div style={{ display: "flex", height: "100%" }}>
@@ -160,7 +161,17 @@ export function NewsAndFundamentalsScreen() {
               </p>
             )}
 
-            <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 8px" }}>News and highlights (top 5)</p>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0 0 8px" }}>
+              <p style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>News and highlights (top {newsLimit})</p>
+              <label style={{ fontSize: 11, color: colors.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
+                Show
+                <select value={newsLimit} onChange={(e) => setNewsLimit(Number(e.target.value))} style={{ fontSize: 11 }}>
+                  <option value={5}>5</option>
+                  <option value={10}>10</option>
+                  <option value={15}>15</option>
+                </select>
+              </label>
+            </div>
             <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 8px" }}>
               Items labeled "NSE/BSE (verified filing)" are real corporate announcements pulled directly
               from the exchange — not guaranteed to succeed every time (both are unofficial endpoints; NSE

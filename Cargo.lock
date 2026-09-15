@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "pm-desktop"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "chrono",
  "pm-application",
