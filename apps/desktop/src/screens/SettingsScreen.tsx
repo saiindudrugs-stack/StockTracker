@@ -433,7 +433,9 @@ export function SettingsScreen({
             {upstoxRefreshing ? "Refreshing…" : "Refresh Instrument List"}
           </button>
           <span style={{ fontSize: 11, color: colors.textMuted }}>
-            Required once before Upstox can resolve any symbol.
+            Optional now — symbols resolve automatically on first use via Upstox's Search API. This
+            bulk download is only useful for pre-warming many symbols at once, and depends on a
+            separate file Upstox publishes that's been unreliable in testing.
           </span>
         </div>
         {upstoxRefreshMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{upstoxRefreshMsg}</p>}

@@ -24,6 +24,28 @@ impl SqliteUpstoxInstrumentCache {
         Self { pool }
     }
 
+    /// Inserts or updates exactly one row, unlike replace_all (which
+    /// wholesale-replaces the entire cache) — used for on-demand
+    /// resolution via the Search API, where wiping every other cached
+    /// instrument just to add one would be a real bug, not a detail.
+    pub async fn upsert_one(&self, trading_symbol: &str, exchange: &str, instrument_key: &str, isin: Option<&str>) -> Result<(), RepositoryError> {
+        let trading_symbol = trading_symbol.to_string();
+        let exchange = exchange.to_string();
+        let instrument_key = instrument_key.to_string();
+        let isin = isin.map(|s| s.to_string());
+        self.pool
+            .with_conn(move |conn| {
+                conn.execute(
+                    "INSERT INTO upstox_instrument_cache (trading_symbol, exchange, instrument_key, isin) \
+                     VALUES (?1, ?2, ?3, ?4) \
+                     ON CONFLICT(trading_symbol, exchange) DO UPDATE SET instrument_key = excluded.instrument_key, isin = excluded.isin",
+                    params![trading_symbol, exchange, instrument_key, isin],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     pub async fn replace_all(&self, rows: Vec<UpstoxInstrumentRow>) -> Result<(), RepositoryError> {
         self.pool
             .with_conn(move |conn| {
@@ -94,6 +116,33 @@ mod tests {
             instrument_key: key.to_string(),
             isin: isin.map(|s| s.to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn upsert_one_adds_a_row_without_wiping_existing_ones() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let cache = SqliteUpstoxInstrumentCache::new(pool);
+        cache
+            .replace_all(vec![UpstoxInstrumentRow { trading_symbol: "INFY".to_string(), exchange: "NSE".to_string(), instrument_key: "NSE_EQ|A".to_string(), isin: None }])
+            .await
+            .unwrap();
+
+        cache.upsert_one("TCS", "NSE", "NSE_EQ|B", Some("INE467B01029")).await.unwrap();
+
+        assert_eq!(cache.count().await.unwrap(), 2);
+        assert_eq!(cache.get_instrument_key("INFY", "NSE").await.unwrap(), Some("NSE_EQ|A".to_string()));
+        assert_eq!(cache.get_instrument_key("TCS", "NSE").await.unwrap(), Some("NSE_EQ|B".to_string()));
+    }
+
+    #[tokio::test]
+    async fn upsert_one_updates_in_place_when_the_symbol_already_exists() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let cache = SqliteUpstoxInstrumentCache::new(pool);
+        cache.upsert_one("INFY", "NSE", "NSE_EQ|OLD", None).await.unwrap();
+        cache.upsert_one("INFY", "NSE", "NSE_EQ|NEW", Some("INE009A01021")).await.unwrap();
+
+        assert_eq!(cache.count().await.unwrap(), 1);
+        assert_eq!(cache.get_instrument_key("INFY", "NSE").await.unwrap(), Some("NSE_EQ|NEW".to_string()));
     }
 
     #[tokio::test]

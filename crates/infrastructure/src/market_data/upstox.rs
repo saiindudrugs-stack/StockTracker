@@ -103,6 +103,46 @@ impl UpstoxProvider {
         Ok(count)
     }
 
+    /// Real, officially documented endpoint (Upstox's own "Instrument
+    /// Search API," announced March 2026) — confirmed via a real curl
+    /// example in their docs, returning {status, data: [...], meta_data}.
+    /// This replaces reliance on the bulk .gz instrument files for the
+    /// critical path: a real live test showed that file download failing
+    /// ("expected value at line 1 column 1" — an empty or non-JSON
+    /// response), and Upstox's own docs explicitly position this search
+    /// endpoint as the better fit for "look up a few instruments," which
+    /// is exactly this app's use case, rather than "the full universe of
+    /// instruments" the bulk files are for.
+    async fn search_instrument(&self, symbol: &str, exchange: &str) -> Result<UpstoxSearchResult, MarketDataError> {
+        let token = self.token().await?;
+        let url = format!("https://api.upstox.com/v2/instruments/search?query={symbol}&exchanges={exchange}&segments=EQ&records=5");
+        let response = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| MarketDataError::RequestFailed(e.to_string()))?;
+
+        let body: SearchResponse = response
+            .json()
+            .await
+            .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't parse Upstox instrument search for {symbol}: {e}")))?;
+
+        // Prefer an exact trading_symbol match over the first result —
+        // free-text search can return close-but-not-exact matches (e.g.
+        // searching "TCS" could plausibly also surface a similarly-named
+        // instrument); an exact match is worth preferring when present.
+        let results = body.data.unwrap_or_default();
+        results
+            .iter()
+            .find(|r| r.trading_symbol.as_deref().map(|s| s.eq_ignore_ascii_case(symbol)).unwrap_or(false))
+            .or_else(|| results.first())
+            .map(|r| UpstoxSearchResult { instrument_key: r.instrument_key.clone(), isin: r.isin.clone() })
+            .ok_or_else(|| MarketDataError::NoData(format!("{symbol}: no match from Upstox instrument search")))
+    }
+
     async fn resolve_instrument_key(&self, symbol: &str, exchange: &str) -> Result<String, MarketDataError> {
         let primary = exchange.to_uppercase();
         if let Some(key) = self
@@ -126,9 +166,16 @@ impl UpstoxProvider {
                 return Ok(key);
             }
         }
-        Err(MarketDataError::NoData(format!(
-            "{symbol} not found in Upstox instrument cache — try Refresh Instrument List in Settings first"
-        )))
+
+        // Cache miss on both exchanges — search on demand and cache the
+        // result, rather than requiring a separate manual "refresh" step
+        // that depended on the now-unreliable bulk file download.
+        // upsert_one, not replace_all — the latter wholesale-replaces the
+        // entire cache, which would wipe every other cached instrument
+        // just to add this one.
+        let result = self.search_instrument(symbol, &primary).await?;
+        let _ = self.instruments.upsert_one(symbol, &primary, &result.instrument_key, result.isin.as_deref()).await;
+        Ok(result.instrument_key)
     }
 
     /// Public so main.rs's fundamentals command can resolve an ISIN
@@ -158,7 +205,12 @@ impl UpstoxProvider {
                 return Ok(isin);
             }
         }
-        Err(MarketDataError::NoData(format!("{symbol}: no ISIN in Upstox instrument cache")))
+
+        // Same on-demand search-and-cache fallback as resolve_instrument_key.
+        let result = self.search_instrument(symbol, &primary).await?;
+        let isin = result.isin.clone().ok_or_else(|| MarketDataError::NoData(format!("{symbol}: Upstox search returned no ISIN")))?;
+        let _ = self.instruments.upsert_one(symbol, &primary, &result.instrument_key, Some(&isin)).await;
+        Ok(isin)
     }
 
     pub fn http_client(&self) -> &Client {
@@ -277,6 +329,23 @@ impl MarketDataProvider for UpstoxProvider {
     }
 }
 
+struct UpstoxSearchResult {
+    instrument_key: String,
+    isin: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SearchResponse {
+    data: Option<Vec<SearchResultRow>>,
+}
+#[derive(Deserialize)]
+struct SearchResultRow {
+    #[serde(rename = "trading_symbol")]
+    trading_symbol: Option<String>,
+    instrument_key: String,
+    isin: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct RawInstrumentRow {
     trading_symbol: Option<String>,
@@ -314,6 +383,35 @@ struct CandleData {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn parses_a_real_shaped_search_response() {
+        let sample = r#"{"status": "success", "data": [{"trading_symbol": "RELIANCE", "instrument_key": "NSE_EQ|INE002A01018", "isin": "INE002A01018"}], "meta_data": {"page": {"count": 1}}}"#;
+        let parsed: SearchResponse = serde_json::from_str(sample).unwrap();
+        let rows = parsed.data.unwrap();
+        assert_eq!(rows[0].trading_symbol.as_deref(), Some("RELIANCE"));
+        assert_eq!(rows[0].instrument_key, "NSE_EQ|INE002A01018");
+    }
+
+    #[test]
+    fn empty_data_array_parses_to_no_results_not_an_error() {
+        let sample = r#"{"status": "success", "data": []}"#;
+        let parsed: SearchResponse = serde_json::from_str(sample).unwrap();
+        assert_eq!(parsed.data.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn prefers_exact_trading_symbol_match_over_first_result() {
+        let rows = vec![
+            SearchResultRow { trading_symbol: Some("RELIANCEPOWER".to_string()), instrument_key: "NSE_EQ|WRONG".to_string(), isin: None },
+            SearchResultRow { trading_symbol: Some("RELIANCE".to_string()), instrument_key: "NSE_EQ|CORRECT".to_string(), isin: Some("INE002A01018".to_string()) },
+        ];
+        let found = rows
+            .iter()
+            .find(|r| r.trading_symbol.as_deref().map(|s| s.eq_ignore_ascii_case("RELIANCE")).unwrap_or(false))
+            .or_else(|| rows.first());
+        assert_eq!(found.unwrap().instrument_key, "NSE_EQ|CORRECT");
+    }
 
     #[test]
     fn decodes_real_gzip_bytes_correctly() {
