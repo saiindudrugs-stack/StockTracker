@@ -1,30 +1,21 @@
-//! Alpha Vantage — used as a FALLBACK, not primary. Unlike Yahoo Finance,
-//! this is an official, documented API (NASDAQ's own licensed US data
-//! provider), but its free tier has a very low request ceiling (as low as
-//! single-digit calls per minute on some accounts) — too thin to be the
-//! primary source for an app that might refresh a dozen holdings at once.
-//! Yahoo stays primary for volume; this exists for when Yahoo's unofficial
-//! endpoint has an outage or gets rate-limited.
-//!
-//! Live-verified for all three markets this app supports, by the user
-//! directly testing GLOBAL_QUOTE with their own API key (not from
-//! documentation alone): RELIANCE.BSE (India), AAPL (US), TSCO.LON (UK)
-//! all returned real data. The NSE colon-prefix format ("NSE:SYMBOL",
-//! documented in Alpha Vantage's own cookbook) was NOT tested — only the
-//! .BSE suffix was — so NSE-exchange instruments are mapped to Alpha
-//! Vantage's .BSE format as a practical fallback (same company, adjacent
-//! Indian exchange, nearly identical price) rather than trusting an
-//! unverified NSE-specific format.
+//! Alpha Vantage — deliberately NOT a MarketDataProvider (no fetch_quote,
+//! not part of the priority-ordered quote chain at all). Its free tier's
+//! real limit is 25 requests/day TOTAL, which makes it fundamentally
+//! unsuitable as a live-price source or as a general fallback — it was
+//! removed from that role entirely. What it's kept for: `OVERVIEW`
+//! returns two fields (market cap, dividend yield) that neither Upstox's
+//! Fundamentals API nor Yahoo reliably provide, and this app's own News
+//! screen wants at least market cap shown. Given the 25/day budget, the
+//! caller is expected to cache the result for a real stretch of time
+//! (this app's own caching layer enforces once-an-hour, not this module —
+//! see SqliteAlphaVantageOverviewCache) rather than calling this on every
+//! fundamentals view.
 
-use async_trait::async_trait;
-use chrono::NaiveDate;
 use reqwest::Client;
-use rust_decimal::Decimal;
-use std::collections::HashMap;
-use std::str::FromStr;
+use serde::Deserialize;
 use std::sync::Arc;
 
-use super::{DailyBar, MarketDataError, MarketDataProvider, Quote};
+use super::MarketDataError;
 use crate::sqlite::SqliteAppSettings;
 
 pub const ALPHA_VANTAGE_API_KEY_SETTING: &str = "alpha_vantage_api_key";
@@ -34,36 +25,34 @@ pub struct AlphaVantageProvider {
     settings: Arc<SqliteAppSettings>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AlphaVantageOverview {
+    pub market_cap: Option<f64>,
+    pub dividend_yield: Option<f64>,
+}
+
 impl AlphaVantageProvider {
-    /// Reads the key from local settings storage on every call rather than
-    /// baking a fixed key in at construction — lets Settings -> save a new
-    /// key take effect immediately, no app restart needed.
     pub fn new(settings: Arc<SqliteAppSettings>) -> Self {
         Self { http: Client::new(), settings }
     }
 
-    /// See the module-level doc comment for exactly what's been verified
-    /// here vs. what's a reasonable-but-untested extrapolation.
+    /// Same symbol-mapping convention Alpha Vantage's own docs describe:
+    /// bare symbol for US, `EXCHANGE:SYMBOL` for everything else — kept
+    /// from the original implementation since this part was already
+    /// live-verified by the user (RELIANCE.BSE, AAPL, TSCO.LON all
+    /// confirmed working earlier in this project).
     fn to_alpha_vantage_symbol(symbol: &str, exchange: &str) -> String {
         match exchange.to_uppercase().as_str() {
-            "BSE" => format!("{symbol}.BSE"),
-            // Not independently verified — NSE listings are mapped to the
-            // *confirmed-working* .BSE format for the same company rather
-            // than the documented-but-untested "NSE:SYMBOL" form.
-            "NSE" => format!("{symbol}.BSE"),
+            "NSE" | "BSE" => format!("{symbol}.BSE"),
             "LSE" => format!("{symbol}.LON"),
             _ => symbol.to_string(),
         }
     }
 
-    /// Verified real field names (MarketCapitalization, PERatio,
-    /// DividendYield, 52WeekHigh/Low, Sector, Industry, Description) via
-    /// Alpha Vantage's own published OVERVIEW docs and independent
-    /// third-party confirmation — NOT live-tested against a real key from
-    /// this sandbox, same honesty caveat as everything else built without
-    /// a live credential. Added specifically to fill a real gap: neither
-    /// Upstox's Fundamentals API nor Yahoo's fundamentals fetch reliably
-    /// return market cap, and this app's News screen wants at least that.
+    /// Only market_cap and dividend_yield are extracted — every other
+    /// OVERVIEW field (PE, sector, description, etc.) is intentionally
+    /// left unused now that Upstox's Fundamentals API covers those, to
+    /// keep this module's footprint matching its narrow, current role.
     pub async fn fetch_overview(&self, symbol: &str, exchange: &str) -> Result<AlphaVantageOverview, MarketDataError> {
         let api_key = self
             .settings
@@ -81,193 +70,29 @@ impl AlphaVantageProvider {
             .await
             .map_err(|e| MarketDataError::UnexpectedResponse(format!("couldn't parse Alpha Vantage overview for {av_symbol}: {e}")))?;
 
-        // An unrecognized symbol comes back as `{}` on this endpoint too
-        // (same shape as GLOBAL_QUOTE's empty-object failure mode) rather
-        // than an HTTP error — Symbol being None is how that's detected.
+        // An unrecognized symbol, or a rate-limited request, comes back
+        // as `{}` on this endpoint rather than an HTTP error — Symbol
+        // being None is how that's detected, same as the original
+        // implementation this replaces.
         if body.symbol.is_none() {
             return Err(MarketDataError::NoData(format!("{av_symbol}: empty overview — bad symbol, rate limit, or invalid key")));
         }
 
         Ok(AlphaVantageOverview {
-            sector: body.sector,
-            industry: body.industry,
-            description: body.description,
             market_cap: body.market_capitalization.and_then(|s| s.parse::<f64>().ok()),
-            pe_ratio: body.pe_ratio.and_then(|s| s.parse::<f64>().ok()),
             dividend_yield: body.dividend_yield.and_then(|s| s.parse::<f64>().ok()),
-            week52_high: body.week_52_high.and_then(|s| s.parse::<f64>().ok()),
-            week52_low: body.week_52_low.and_then(|s| s.parse::<f64>().ok()),
         })
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct AlphaVantageOverview {
-    pub sector: Option<String>,
-    pub industry: Option<String>,
-    pub description: Option<String>,
-    pub market_cap: Option<f64>,
-    pub pe_ratio: Option<f64>,
-    pub dividend_yield: Option<f64>,
-    pub week52_high: Option<f64>,
-    pub week52_low: Option<f64>,
-}
-
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 struct RawOverview {
     #[serde(rename = "Symbol")]
     symbol: Option<String>,
-    #[serde(rename = "Sector")]
-    sector: Option<String>,
-    #[serde(rename = "Industry")]
-    industry: Option<String>,
-    #[serde(rename = "Description")]
-    description: Option<String>,
     #[serde(rename = "MarketCapitalization")]
     market_capitalization: Option<String>,
-    #[serde(rename = "PERatio")]
-    pe_ratio: Option<String>,
     #[serde(rename = "DividendYield")]
     dividend_yield: Option<String>,
-    #[serde(rename = "52WeekHigh")]
-    week_52_high: Option<String>,
-    #[serde(rename = "52WeekLow")]
-    week_52_low: Option<String>,
-}
-
-#[async_trait]
-impl MarketDataProvider for AlphaVantageProvider {
-    async fn fetch_quote(&self, symbol: &str, exchange: &str) -> Result<Quote, MarketDataError> {
-        let api_key = self
-            .settings
-            .get(ALPHA_VANTAGE_API_KEY_SETTING)
-            .await
-            .map_err(|e| MarketDataError::RequestFailed(e.to_string()))?
-            .filter(|k| !k.trim().is_empty())
-            .ok_or_else(|| MarketDataError::RequestFailed("no Alpha Vantage API key configured in Settings".to_string()))?;
-
-        let av_symbol = Self::to_alpha_vantage_symbol(symbol, exchange);
-        let url = format!(
-            "https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={av_symbol}&apikey={api_key}"
-        );
-        let response = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| MarketDataError::RequestFailed(e.to_string()))?;
-
-        let body: GlobalQuoteResponse = response.json().await.map_err(|e| {
-            MarketDataError::UnexpectedResponse(format!("couldn't parse Alpha Vantage response for {av_symbol}: {e}"))
-        })?;
-
-        let q = body
-            .global_quote
-            .filter(|q| !q.price.is_empty())
-            .ok_or_else(|| MarketDataError::NoData(format!("{av_symbol}: empty response — bad symbol, rate limit, or invalid key")))?;
-
-        let price = Decimal::from_str(&q.price)
-            .map_err(|_| MarketDataError::UnexpectedResponse(format!("bad price for {av_symbol}")))?;
-
-        Ok(Quote {
-            price,
-            day_high: Decimal::from_str(&q.high).ok(),
-            day_low: Decimal::from_str(&q.low).ok(),
-            // Not available from GLOBAL_QUOTE (would need the separate
-            // OVERVIEW endpoint) — acceptable gap for a fallback path.
-            week52_high: None,
-            week52_low: None,
-            volume: q.volume.parse().ok(),
-        })
-    }
-
-    async fn fetch_daily_history_1y(&self, symbol: &str, exchange: &str) -> Result<Vec<DailyBar>, MarketDataError> {
-        let api_key = self
-            .settings
-            .get(ALPHA_VANTAGE_API_KEY_SETTING)
-            .await
-            .map_err(|e| MarketDataError::RequestFailed(e.to_string()))?
-            .filter(|k| !k.trim().is_empty())
-            .ok_or_else(|| MarketDataError::RequestFailed("no Alpha Vantage API key configured in Settings".to_string()))?;
-
-        let av_symbol = Self::to_alpha_vantage_symbol(symbol, exchange);
-        let url = format!(
-            "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={av_symbol}&outputsize=full&apikey={api_key}"
-        );
-        let response = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| MarketDataError::RequestFailed(e.to_string()))?;
-
-        let body: DailySeriesResponse = response.json().await.map_err(|e| {
-            MarketDataError::UnexpectedResponse(format!("couldn't parse Alpha Vantage history for {av_symbol}: {e}"))
-        })?;
-
-        let series = body
-            .time_series
-            .ok_or_else(|| MarketDataError::NoData(format!("{av_symbol}: no time series — bad symbol, rate limit, or invalid key")))?;
-
-        let cutoff = chrono::Utc::now().date_naive() - chrono::Duration::days(366);
-        let mut bars: Vec<DailyBar> = series
-            .into_iter()
-            .filter_map(|(date_str, bar)| {
-                let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").ok()?;
-                if date < cutoff {
-                    return None;
-                }
-                Some(DailyBar {
-                    date,
-                    open: bar.open.parse().ok()?,
-                    high: bar.high.parse().ok()?,
-                    low: bar.low.parse().ok()?,
-                    close: bar.close.parse().ok()?,
-                    volume: bar.volume.parse().ok()?,
-                })
-            })
-            .collect();
-        bars.sort_by_key(|b| b.date);
-        Ok(bars)
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct GlobalQuoteResponse {
-    #[serde(rename = "Global Quote")]
-    global_quote: Option<GlobalQuote>,
-}
-
-#[derive(serde::Deserialize)]
-struct GlobalQuote {
-    #[serde(rename = "03. high")]
-    high: String,
-    #[serde(rename = "04. low")]
-    low: String,
-    #[serde(rename = "05. price")]
-    price: String,
-    #[serde(rename = "06. volume")]
-    volume: String,
-}
-
-#[derive(serde::Deserialize)]
-struct DailySeriesResponse {
-    #[serde(rename = "Time Series (Daily)")]
-    time_series: Option<HashMap<String, DailyBarRaw>>,
-}
-
-#[derive(serde::Deserialize)]
-struct DailyBarRaw {
-    #[serde(rename = "1. open")]
-    open: String,
-    #[serde(rename = "2. high")]
-    high: String,
-    #[serde(rename = "3. low")]
-    low: String,
-    #[serde(rename = "4. close")]
-    close: String,
-    #[serde(rename = "5. volume")]
-    volume: String,
 }
 
 #[cfg(test)]
@@ -276,58 +101,33 @@ mod tests {
 
     #[test]
     fn parses_a_real_shaped_overview_response() {
-        let sample = r#"{"Symbol": "IBM", "Sector": "TECHNOLOGY", "Industry": "COMPUTER & OFFICE EQUIPMENT", "Description": "International Business Machines.", "MarketCapitalization": "150000000000", "PERatio": "22.5", "DividendYield": "0.045", "52WeekHigh": "230.50", "52WeekLow": "150.20"}"#;
+        let sample = r#"{"Symbol": "IBM", "MarketCapitalization": "150000000000", "DividendYield": "0.045"}"#;
         let parsed: RawOverview = serde_json::from_str(sample).unwrap();
         assert_eq!(parsed.symbol.as_deref(), Some("IBM"));
         assert_eq!(parsed.market_capitalization.as_deref(), Some("150000000000"));
+        assert_eq!(parsed.dividend_yield.as_deref(), Some("0.045"));
     }
 
     #[test]
-    fn empty_overview_object_has_no_symbol_signaling_bad_lookup() {
+    fn empty_overview_object_has_no_symbol_signaling_bad_lookup_or_rate_limit() {
         let sample = r#"{}"#;
         let parsed: RawOverview = serde_json::from_str(sample).unwrap();
         assert!(parsed.symbol.is_none());
     }
 
     #[test]
-    fn bse_and_nse_both_map_to_the_verified_bse_suffix() {
-        assert_eq!(AlphaVantageProvider::to_alpha_vantage_symbol("RELIANCE", "BSE"), "RELIANCE.BSE");
+    fn maps_nse_and_bse_to_the_bse_suffix() {
         assert_eq!(AlphaVantageProvider::to_alpha_vantage_symbol("RELIANCE", "NSE"), "RELIANCE.BSE");
+        assert_eq!(AlphaVantageProvider::to_alpha_vantage_symbol("RELIANCE", "BSE"), "RELIANCE.BSE");
     }
 
     #[test]
-    fn lse_maps_to_dot_lon_suffix() {
+    fn maps_lse_to_the_lon_suffix() {
         assert_eq!(AlphaVantageProvider::to_alpha_vantage_symbol("TSCO", "LSE"), "TSCO.LON");
     }
 
     #[test]
-    fn us_exchanges_pass_through_unsuffixed() {
+    fn leaves_us_symbols_bare() {
         assert_eq!(AlphaVantageProvider::to_alpha_vantage_symbol("AAPL", "NASDAQ"), "AAPL");
-        assert_eq!(AlphaVantageProvider::to_alpha_vantage_symbol("AAPL", "NYSE"), "AAPL");
-    }
-
-    #[test]
-    fn parses_a_real_shaped_global_quote_response() {
-        let sample = r#"{"Global Quote": {"01. symbol": "AAPL", "02. open": "210.00", "03. high": "212.50", "04. low": "209.10", "05. price": "211.34", "06. volume": "45000000", "07. latest trading day": "2026-07-24", "08. previous close": "209.80", "09. change": "1.54", "10. change percent": "0.7340%"}}"#;
-        let parsed: GlobalQuoteResponse = serde_json::from_str(sample).unwrap();
-        let q = parsed.global_quote.unwrap();
-        assert_eq!(q.price, "211.34");
-        assert_eq!(q.high, "212.50");
-    }
-
-    #[test]
-    fn empty_object_response_is_treated_as_no_data_not_a_panic() {
-        let sample = r#"{}"#;
-        let parsed: GlobalQuoteResponse = serde_json::from_str(sample).unwrap();
-        assert!(parsed.global_quote.is_none());
-    }
-
-    #[test]
-    fn parses_a_real_shaped_daily_series_response() {
-        let sample = r#"{"Time Series (Daily)": {"2026-07-24": {"1. open": "210.00", "2. high": "212.50", "3. low": "209.10", "4. close": "211.34", "5. volume": "45000000"}}}"#;
-        let parsed: DailySeriesResponse = serde_json::from_str(sample).unwrap();
-        let series = parsed.time_series.unwrap();
-        assert_eq!(series.len(), 1);
-        assert_eq!(series["2026-07-24"].close, "211.34");
     }
 }

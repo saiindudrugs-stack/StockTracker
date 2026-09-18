@@ -43,7 +43,7 @@ use pm_infrastructure::market_data::{
 use pm_infrastructure::sqlite::{
     SqliteAlertRuleRepository, SqliteAppSettings, SqliteHoldingRepository, SqliteInstrumentRepository,
     SqliteMfSchemeCache, SqlitePool, SqlitePortfolioRepository, SqlitePriceRepository, SqliteTransactionRepository,
-    SqliteUpstoxInstrumentCache, SqliteKiteInstrumentCache,
+    SqliteUpstoxInstrumentCache, SqliteKiteInstrumentCache, SqliteAlphaVantageOverviewCache,
 };
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -87,6 +87,7 @@ struct AppState {
     /// actually happening in that case, same as before this feature).
     live_feed_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     kite_instruments: Arc<SqliteKiteInstrumentCache>,
+    alpha_vantage_overview_cache: Arc<SqliteAlphaVantageOverviewCache>,
 }
 
 #[derive(Serialize)]
@@ -379,30 +380,6 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
         }
     };
 
-    // Gap-fill AND genuine fallback: when the primary source (Upstox or
-    // Yahoo) came back completely empty (source == "none", i.e. both
-    // failed), Alpha Vantage is the ONLY thing standing between the user
-    // and nothing at all — this is exactly the situation that was
-    // silently broken before (Yahoo failing used to abort before this
-    // code ever ran). Also still gap-fills a partially-successful view,
-    // same as before.
-    if view.market_cap.is_none() || view.dividend_yield.is_none() || view.week52_high.is_none() {
-        let av = AlphaVantageProvider::new(state.app_settings.clone());
-        if let Ok(overview) = av.fetch_overview(&instrument.symbol, &instrument.exchange).await {
-            let was_empty = view.source == "none";
-            view.market_cap = view.market_cap.or(overview.market_cap.map(|v| v.to_string()));
-            view.dividend_yield = view.dividend_yield.or(overview.dividend_yield.map(|v| v.to_string()));
-            view.week52_high = view.week52_high.or(overview.week52_high.map(|v| v.to_string()));
-            view.week52_low = view.week52_low.or(overview.week52_low.map(|v| v.to_string()));
-            view.sector = view.sector.or(overview.sector);
-            view.industry = view.industry.or(overview.industry);
-            view.description = view.description.or(overview.description);
-            if was_empty {
-                view.source = "alpha_vantage".to_string();
-            }
-        }
-    }
-
     // Volume is always fetched live (via the same priority-ordered
     // provider used everywhere else), never from a "fundamentals"
     // endpoint — it's today's trading activity, not a static company
@@ -420,10 +397,78 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
     // whenever just one of them has an off day, which is what used to
     // happen.
     if view.source == "none" {
-        return Err(format!("{symbol}: no fundamentals available from Upstox, Yahoo, or Alpha Vantage"));
+        return Err(format!("{symbol}: no fundamentals available from Upstox or Yahoo"));
     }
 
     Ok(view)
+}
+
+#[derive(Serialize)]
+struct AlphaVantageOverviewView {
+    market_cap: Option<String>,
+    dividend_yield: Option<String>,
+    fetched_at: String,
+    is_stale: bool,
+}
+
+const ALPHA_VANTAGE_OVERVIEW_TTL_SECONDS: i64 = 3600; // once an hour, per the real 25-requests/day budget
+
+/// Deliberately separate from get_fundamentals — these two values now
+/// display near News rather than in the main Fundamentals grid, and
+/// they're on their own cache/refresh cadence (once an hour) that the
+/// rest of Fundamentals isn't subject to, so keeping the command
+/// separate avoids conflating two different data lifecycles.
+#[tauri::command]
+async fn get_market_cap_and_dividend_yield(state: State<'_, AppState>, symbol: String) -> Result<AlphaVantageOverviewView, String> {
+    let instrument = state
+        .instruments
+        .find_by_symbol(&symbol)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
+
+    let now = chrono::Utc::now().timestamp();
+    let cached = state.alpha_vantage_overview_cache.get(&instrument.symbol).await.map_err(|e| e.to_string())?;
+
+    let is_fresh = cached.as_ref().map(|c| now - c.fetched_at_unix < ALPHA_VANTAGE_OVERVIEW_TTL_SECONDS).unwrap_or(false);
+    if is_fresh {
+        let c = cached.unwrap();
+        return Ok(AlphaVantageOverviewView {
+            market_cap: c.market_cap.map(|v| v.to_string()),
+            dividend_yield: c.dividend_yield.map(|v| v.to_string()),
+            fetched_at: chrono::DateTime::from_timestamp(c.fetched_at_unix, 0).map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default(),
+            is_stale: false,
+        });
+    }
+
+    let provider = AlphaVantageProvider::new(state.app_settings.clone());
+    match provider.fetch_overview(&instrument.symbol, &instrument.exchange).await {
+        Ok(overview) => {
+            state
+                .alpha_vantage_overview_cache
+                .upsert(&instrument.symbol, overview.market_cap, overview.dividend_yield, now)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(AlphaVantageOverviewView {
+                market_cap: overview.market_cap.map(|v| v.to_string()),
+                dividend_yield: overview.dividend_yield.map(|v| v.to_string()),
+                fetched_at: chrono::DateTime::from_timestamp(now, 0).map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default(),
+                is_stale: false,
+            })
+        }
+        // The fetch failed (rate limit, no key, bad symbol) but a stale
+        // cached value still exists — serving that stale value beats
+        // showing nothing, as long as the frontend can tell it's stale.
+        Err(e) => match cached {
+            Some(c) => Ok(AlphaVantageOverviewView {
+                market_cap: c.market_cap.map(|v| v.to_string()),
+                dividend_yield: c.dividend_yield.map(|v| v.to_string()),
+                fetched_at: chrono::DateTime::from_timestamp(c.fetched_at_unix, 0).map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default(),
+                is_stale: true,
+            }),
+            None => Err(e.to_string()),
+        },
+    }
 }
 
 /// Returns None on ANY failure along the way (no token, no cached ISIN,
@@ -1720,22 +1765,14 @@ async fn reset_all_data(state: State<'_, AppState>) -> Result<(), String> {
     state.pool.reset_all().await.map_err(|e| e.to_string())
 }
 
-/// Saves the Alpha Vantage fallback API key to local settings storage —
-/// never committed to GitHub, never synced anywhere. Takes effect
-/// immediately, no restart needed, since AlphaVantageProvider reads this
-/// setting fresh on every call rather than caching it at startup.
+/// Saves the Alpha Vantage key — now used ONLY for market cap + dividend
+/// yield gap-filling on the Fundamentals view, never for live price
+/// quotes. Never committed to GitHub, never synced anywhere.
 #[tauri::command]
 async fn save_alpha_vantage_key(state: State<'_, AppState>, api_key: String) -> Result<(), String> {
-    state
-        .app_settings
-        .set(ALPHA_VANTAGE_API_KEY_SETTING, api_key.trim())
-        .await
-        .map_err(|e| e.to_string())
+    state.app_settings.set(ALPHA_VANTAGE_API_KEY_SETTING, api_key.trim()).await.map_err(|e| e.to_string())
 }
 
-/// Returns whether a key is currently saved — deliberately does NOT return
-/// the key itself back to the frontend once saved, so it isn't sitting in
-/// the webview's JS state/memory longer than the one moment it's typed in.
 #[tauri::command]
 async fn has_alpha_vantage_key(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state
@@ -1949,13 +1986,25 @@ async fn test_market_data_connection(state: State<'_, AppState>, provider: Strin
             p.fetch_quote("RELIANCE", "NSE").await
         }
         "yahoo" => state.yahoo_direct.fetch_quote("RELIANCE", "NSE").await,
-        "alpha_vantage" => {
-            let p = AlphaVantageProvider::new(state.app_settings.clone());
-            p.fetch_quote("AAPL", "NASDAQ").await
-        }
         other => return Err(format!("unknown market data provider '{other}'")),
     };
-    quote.map(|q| format!("Connected — test quote (RELIANCE/AAPL): {}", q.price)).map_err(|e| e.to_string())
+    quote.map(|q| format!("Connected — test quote (RELIANCE): {}", q.price)).map_err(|e| e.to_string())
+}
+
+/// Tests the OVERVIEW endpoint specifically, not a quote — Alpha Vantage
+/// is no longer a quote source at all, so "connected" here means "can
+/// fetch market cap/dividend yield," which is its entire remaining job.
+/// RELIANCE is used as the fixed test symbol, same reasoning as every
+/// other connection test in this app: proving connectivity + auth, not
+/// the price.
+#[tauri::command]
+async fn test_alpha_vantage_connection(state: State<'_, AppState>) -> Result<String, String> {
+    let av = AlphaVantageProvider::new(state.app_settings.clone());
+    let overview = av.fetch_overview("RELIANCE", "NSE").await.map_err(|e| e.to_string())?;
+    Ok(format!(
+        "Connected — RELIANCE market cap: {}",
+        overview.market_cap.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_string())
+    ))
 }
 
 /// Same "green only after a real call succeeds" reasoning as
@@ -3079,7 +3128,6 @@ fn main() {
             let named_providers: Vec<(String, Arc<dyn MarketDataProvider>)> = vec![
                 ("upstox".to_string(), Arc::new(UpstoxProvider::new(app_settings_repo.clone(), upstox_instruments_repo.clone()))),
                 ("yahoo".to_string(), Arc::new(YahooFinanceProvider::new())),
-                ("alpha_vantage".to_string(), Arc::new(AlphaVantageProvider::new(app_settings_repo.clone()))),
             ];
             let market_data_provider = Arc::new(PrioritizedMarketDataProvider::new(named_providers, app_settings_repo.clone()));
 
@@ -3096,6 +3144,7 @@ fn main() {
                 upstox_fundamentals: Arc::new(UpstoxFundamentalsClient::new()),
                 upstox_instruments: upstox_instruments_repo,
                 kite_instruments: Arc::new(SqliteKiteInstrumentCache::new(pool.clone())),
+                alpha_vantage_overview_cache: Arc::new(SqliteAlphaVantageOverviewCache::new(pool.clone())),
                 mf_scheme_cache: Arc::new(SqliteMfSchemeCache::new(pool)),
                 mf_data_source: Arc::new(AmfiProvider::new()),
                 app_settings: app_settings_repo,
@@ -3116,6 +3165,9 @@ fn main() {
             get_dashboard_summary,
             get_dashboard_by_market,
             get_all_portfolios_summary,
+            get_market_cap_and_dividend_yield,
+            save_alpha_vantage_key,
+            has_alpha_vantage_key,
             get_tax_summary,
             get_tax_loss_harvesting_candidates,
             list_holdings,
@@ -3145,8 +3197,7 @@ fn main() {
             get_ohlc_history,
             compute_portfolio_xirr,
             reset_all_data,
-            save_alpha_vantage_key,
-            has_alpha_vantage_key,
+            test_alpha_vantage_connection,
             save_upstox_token,
             has_upstox_token,
             refresh_upstox_instrument_cache,

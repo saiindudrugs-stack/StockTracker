@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, subscribeLivePriceTicks } from "../lib/tauri";
 import type { InstrumentView, MarketSnapshotView, TechnicalAnalysisView } from "../lib/types";
-import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, currencySymbolForExchange } from "../lib/theme";
+import { colors, phaseColor, recommendationColor, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, currencySymbolForExchange, recommendedRefreshSeconds } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
-
-const AUTO_REFRESH_MS = 30_000;
+import { LiveStreamControl } from "../components/LiveStreamControl";
 
 interface Row {
   snapshot: MarketSnapshotView | null;
@@ -42,17 +41,34 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
   }, []);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshSeconds, setRefreshSeconds] = useState(20);
+  const [refreshReason, setRefreshReason] = useState("");
+  const [refreshOverridden, setRefreshOverridden] = useState(false);
 
-  const [liveStreaming, setLiveStreaming] = useState(false);
-  const [liveStreamBroker, setLiveStreamBroker] = useState<"upstox" | "zerodha">("upstox");
-  const [liveStreamMsg, setLiveStreamMsg] = useState<string | null>(null);
-
-  // Subscribes to ticks only while actually streaming — unsubscribes
-  // immediately when toggled off or when leaving this screen, so a
-  // background tick from a stream the user stopped doesn't quietly patch
-  // a row that's no longer meant to be live.
+  // The recommended interval depends on whichever data source is
+  // currently first in the priority order (Settings) — that's the one
+  // actually taking the hit for a "refresh all" pass, since the others
+  // are only ever tried as a fallback. Recomputed whenever the
+  // instrument count changes too, since Alpha Vantage's safe interval
+  // depends on watchlist size, not just which source is active.
   useEffect(() => {
-    if (!liveStreaming) return;
+    api
+      .getMarketDataPriority()
+      .then((order) => {
+        const activeSource = order.split(",")[0]?.trim() || "yahoo";
+        const { seconds, reason } = recommendedRefreshSeconds(activeSource, instruments.length);
+        setRefreshReason(reason);
+        if (!refreshOverridden) setRefreshSeconds(seconds);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instruments.length]);
+
+  // Always subscribed, not gated on "did this screen start the stream" —
+  // a stream started from Watchlist, Holdings, or Dashboard all emit the
+  // same ticks, and this screen should reflect them regardless of which
+  // one actually clicked Start.
+  useEffect(() => {
     const unsubscribe = subscribeLivePriceTicks((tick) => {
       setRows((prev) => {
         const existing = prev[tick.symbol];
@@ -66,26 +82,7 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
       });
     });
     return unsubscribe;
-  }, [liveStreaming]);
-
-  async function handleToggleLiveStreaming() {
-    if (liveStreaming) {
-      await api.stopLivePriceStream();
-      setLiveStreaming(false);
-      setLiveStreamMsg(null);
-      return;
-    }
-    try {
-      const resolvedCount =
-        liveStreamBroker === "upstox"
-          ? await api.startLivePriceStream(instruments.map((i) => i.symbol))
-          : await api.startZerodhaLiveStream(instruments.map((i) => i.symbol));
-      setLiveStreaming(true);
-      setLiveStreamMsg(`Streaming ${resolvedCount} of ${instruments.length} symbols live (${liveStreamBroker === "upstox" ? "Upstox" : "Zerodha"}).`);
-    } catch (e) {
-      setLiveStreamMsg(String(e));
-    }
-  }
+  }, []);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasAutoPopulatedRef = useRef(false);
 
@@ -235,13 +232,13 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
     if (autoRefresh) {
       intervalRef.current = setInterval(() => {
         refreshAllSnapshots();
-      }, AUTO_REFRESH_MS);
+      }, refreshSeconds * 1000);
     }
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefresh, instruments.length]);
+  }, [autoRefresh, refreshSeconds, instruments.length]);
 
   type SortKey = "symbol" | "previous_close" | "price" | "day_change_pct" | "day_high" | "day_low" | "week52_high" | "week52_low" | "volume" | "rsi" | "phase" | "signal";
   const [sortKey, setSortKey] = useState<SortKey>("volume");
@@ -330,26 +327,46 @@ export function WatchlistScreen({ defaultExchange }: { defaultExchange: string }
         </button>
         <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
           <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-          Auto-refresh every 30s
+          Auto-refresh every
         </label>
-        {!liveStreaming && (
-          <select value={liveStreamBroker} onChange={(e) => setLiveStreamBroker(e.target.value as "upstox" | "zerodha")} style={{ fontSize: 12 }}>
-            <option value="upstox">Upstox</option>
-            <option value="zerodha">Zerodha</option>
-          </select>
-        )}
-        <button
-          onClick={handleToggleLiveStreaming}
-          style={{
-            fontSize: 12,
-            color: liveStreaming ? colors.success : undefined,
-            fontWeight: liveStreaming ? 600 : 400,
+        <input
+          type="number"
+          min={1}
+          value={refreshSeconds}
+          onChange={(e) => {
+            setRefreshOverridden(true);
+            setRefreshSeconds(Math.max(1, Number(e.target.value) || 1));
           }}
-        >
-          {liveStreaming ? "● Live — Stop" : "Start Live Streaming"}
-        </button>
+          style={{ width: 60, fontSize: 12 }}
+        />
+        <span style={{ fontSize: 12 }}>sec</span>
+        {refreshOverridden && (
+          <button
+            onClick={() => {
+              setRefreshOverridden(false);
+              api
+                .getMarketDataPriority()
+                .then((order) => {
+                  const activeSource = order.split(",")[0]?.trim() || "yahoo";
+                  setRefreshSeconds(recommendedRefreshSeconds(activeSource, instruments.length).seconds);
+                })
+                .catch(() => {});
+            }}
+            style={{ fontSize: 11 }}
+          >
+            Reset to recommended
+          </button>
+        )}
       </div>
-      {liveStreamMsg && <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 0, marginBottom: 8 }}>{liveStreamMsg}</p>}
+      <div style={{ marginBottom: 8 }}>
+        <LiveStreamControl symbols={instruments.map((i) => i.symbol)} />
+      </div>
+      {refreshReason && (
+        <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 0, marginBottom: 8 }}>
+          {refreshOverridden ? "Custom interval — " : "Recommended for your current priority source: "}
+          {refreshReason}
+        </p>
+      )}
       <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 0, marginBottom: 12 }}>
         Quotes pull from an unofficial Yahoo Finance endpoint — free, but unsupported and could
         break or get rate-limited, especially with auto-refresh on. "Analyze" pulls a full year of

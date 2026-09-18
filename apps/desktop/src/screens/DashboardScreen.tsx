@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, subscribeLivePriceTicks } from "../lib/tauri";
+import { LiveStreamControl } from "../components/LiveStreamControl";
 import type { AlertRuleView, DashboardSummary, HoldingView, MarketSummaryView, TaxSummaryView, TaxLossHarvestingView, PortfolioSummaryRow } from "../lib/types";
 import { cardStyle, colors, panelStyle, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, zebraRowTint } from "../lib/theme";
 
@@ -305,6 +306,12 @@ export function DashboardScreen({ portfolioId, isMyPortfolio }: { portfolioId: s
         </>
       )}
 
+      {isMyPortfolio && (
+        <div style={{ marginBottom: 16 }}>
+          <LiveStreamControl symbols={holdings.map((h) => h.symbol)} label="This portfolio's holdings:" />
+        </div>
+      )}
+
       {isMyPortfolio && allPortfolios && allPortfolios.length > 0 && (
         <div style={{ ...panelStyle, marginBottom: 16 }}>
           <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px", fontWeight: 600 }}>
@@ -312,7 +319,7 @@ export function DashboardScreen({ portfolioId, isMyPortfolio }: { portfolioId: s
           </p>
           <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 10px" }}>
             Every family portfolio side by side. Updates automatically a moment after any live
-            price tick, if a live stream is running (Watchlist).
+            price tick, if a live stream is running.
           </p>
           <table className="data-table" style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
             <thead>

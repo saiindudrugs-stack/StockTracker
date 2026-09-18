@@ -63,7 +63,7 @@ export function SettingsScreen({
     }
   }
 
-  const [priorityOrder, setPriorityOrder] = useState<string[]>(["upstox", "yahoo", "alpha_vantage"]);
+  const [priorityOrder, setPriorityOrder] = useState<string[]>(["upstox", "yahoo"]);
   const [priorityMsg, setPriorityMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -84,29 +84,6 @@ export function SettingsScreen({
       setPriorityMsg("Order saved. Takes effect immediately.");
     } catch (e) {
       setPriorityMsg(String(e));
-    }
-  }
-
-  const [avKeyInput, setAvKeyInput] = useState("");
-  const [avKeySaved, setAvKeySaved] = useState<boolean | null>(null);
-  const [avSaveMsg, setAvSaveMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    api
-      .hasAlphaVantageKey()
-      .then(setAvKeySaved)
-      .catch(() => setAvKeySaved(false));
-  }, []);
-
-  async function handleSaveAlphaVantageKey() {
-    if (!avKeyInput.trim()) return;
-    try {
-      await api.saveAlphaVantageKey(avKeyInput.trim());
-      setAvKeySaved(true);
-      setAvKeyInput("");
-      setAvSaveMsg("Saved. Takes effect immediately — no restart needed.");
-    } catch (e) {
-      setAvSaveMsg(String(e));
     }
   }
 
@@ -291,6 +268,26 @@ export function SettingsScreen({
     }
   }
 
+  const [avKeyInput, setAvKeyInput] = useState("");
+  const [avKeySaved, setAvKeySaved] = useState<boolean | null>(null);
+  const [avSaveMsg, setAvSaveMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.hasAlphaVantageKey().then(setAvKeySaved).catch(() => setAvKeySaved(false));
+  }, []);
+
+  async function handleSaveAlphaVantageKey() {
+    if (!avKeyInput.trim()) return;
+    try {
+      await api.saveAlphaVantageKey(avKeyInput.trim());
+      setAvKeySaved(true);
+      setAvKeyInput("");
+      setAvSaveMsg("Saved. Takes effect immediately — no restart needed.");
+    } catch (e) {
+      setAvSaveMsg(String(e));
+    }
+  }
+
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
 
@@ -340,12 +337,8 @@ export function SettingsScreen({
           Software update <span style={{ color: colors.textMuted, fontWeight: 400 }}>(paused)</span>
         </p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Temporarily paused, not removed — the release pipeline hit a persistent signing failure
-          ("public key found, but no private key") that held up even after the signing secrets
-          were verified correct and confirmed present in the build step, pointing to a bug in the
-          signing tool itself rather than anything in this app or its GitHub setup. The button
-          below is disabled so it doesn't silently fail — once the signing pipeline is revisited
-          and working, this re-enables with no other changes needed.
+          Paused due to a signing pipeline issue on our end — not something to fix here. Will
+          re-enable automatically once resolved.
         </p>
         {updateStatus === "available" && updateVersion ? (
           <div style={{ ...panelStyle, borderColor: colors.accent, marginBottom: 10 }}>
@@ -372,16 +365,13 @@ export function SettingsScreen({
       <div style={{ ...panelStyle, marginBottom: 16 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Data sources — priority order</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Tried top to bottom — the next source is only ever used when the one above it fails.
-          Reorder with the arrows. Green means a real test call just succeeded, not just that a
-          key is saved.
+          Tried top to bottom; the next source is only used if the one above fails. Reorder with
+          the arrows. Green means a live test call succeeded, not just that a key is saved.
         </p>
         {priorityOrder.map((provider, i) => (
           <div key={provider} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: i < priorityOrder.length - 1 ? `1px solid ${colors.border}` : undefined }}>
             <span style={{ fontSize: 12, color: colors.textMuted, width: 16 }}>{i + 1}.</span>
-            <span style={{ fontSize: 13, fontWeight: 600, textTransform: "capitalize", width: 110 }}>
-              {provider === "alpha_vantage" ? "Alpha Vantage" : provider}
-            </span>
+            <span style={{ fontSize: 13, fontWeight: 600, textTransform: "capitalize", width: 110 }}>{provider}</span>
             <ConnectionIndicator onTest={() => api.testMarketDataConnection(provider)} />
             <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
               <button onClick={() => moveProviderPriority(i, -1)} disabled={i === 0} style={{ fontSize: 11, padding: "2px 8px" }}>
@@ -403,9 +393,8 @@ export function SettingsScreen({
       <div style={{ ...panelStyle, marginBottom: 16 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Upstox</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px" }}>
-          Needs an actual Upstox trading account. Generate a free Analytics Token (valid 1 year, no
-          daily re-login) from Upstox's Developer Apps page, Analytics tab. India (NSE/BSE) only —
-          also powers real Fundamentals and News once connected.
+          Needs an Upstox trading account. Generate a free Analytics Token (valid 1 year) from
+          Upstox's Developer Apps page, Analytics tab. India (NSE/BSE) only.
         </p>
         <p style={{ fontSize: 12, margin: "0 0 8px" }}>
           Analytics Token:{" "}
@@ -433,9 +422,8 @@ export function SettingsScreen({
             {upstoxRefreshing ? "Refreshing…" : "Refresh Instrument List"}
           </button>
           <span style={{ fontSize: 11, color: colors.textMuted }}>
-            Optional now — symbols resolve automatically on first use via Upstox's Search API. This
-            bulk download is only useful for pre-warming many symbols at once, and depends on a
-            separate file Upstox publishes that's been unreliable in testing.
+            Optional — symbols resolve automatically on first use. Only useful for pre-warming
+            many symbols at once.
           </span>
         </div>
         {upstoxRefreshMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{upstoxRefreshMsg}</p>}
@@ -453,11 +441,9 @@ export function SettingsScreen({
       <div style={{ ...panelStyle, marginBottom: 16 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>NSE / BSE Announcements</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px" }}>
-          No account or key needed — real corporate announcements pulled directly from each
-          exchange's own site, replacing the old keyword-guessed "regulatory" tagging. Both are
-          unofficial endpoints; NSE specifically blocks requests from cloud/datacenter networks
-          (this app runs on your own machine, so that shouldn't affect you, but it's why this
-          can't be tested from anywhere except here).
+          No account needed — real corporate announcements pulled directly from each exchange's
+          site. Both are unofficial endpoints; NSE blocks cloud/datacenter networks, so this
+          only tests successfully from your own machine.
         </p>
         <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
           <span style={{ fontSize: 12, fontWeight: 600 }}>NSE:</span>
@@ -472,8 +458,9 @@ export function SettingsScreen({
       <div style={{ ...panelStyle, marginBottom: 16 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Alpha Vantage</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Live-verified for India (BSE), US, and UK. Stored locally in your own database only;
-          never committed to GitHub, never synced anywhere.
+          Scoped to market cap and dividend yield only (shown on the News screen) — unlinked from
+          live prices entirely, since its free tier allows just 25 requests/day. Refreshed at most
+          once an hour per symbol. Stored locally only; never committed to GitHub.
         </p>
         <p style={{ fontSize: 12, margin: "0 0 8px" }}>
           Alpha Vantage key:{" "}
@@ -496,15 +483,14 @@ export function SettingsScreen({
           </button>
         </div>
         {avSaveMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>{avSaveMsg}</p>}
-        <ConnectionIndicator onTest={() => api.testMarketDataConnection("alpha_vantage")} />
+        <ConnectionIndicator onTest={() => api.getMarketCapAndDividendYield("RELIANCE").then((r) => `Connected — market cap: ${r.market_cap ?? "n/a"}`)} />
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>AI portfolio insights</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Configure any of the three below, then use "Get AI Insights" on the Dashboard. Every
-          analysis is a deliberate action — nothing here is called automatically. Keys are stored
-          locally in your own database only; never committed to GitHub, never synced anywhere.
+          Configure any of the three below, then use "Get AI Insights" on the Dashboard — nothing
+          runs automatically. Keys stored locally only, never synced.
         </p>
         {(["anthropic", "openai", "gemini"] as const).map((provider) => (
           <div key={provider} style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${colors.border}` }}>
@@ -554,23 +540,12 @@ export function SettingsScreen({
         </p>
       </div>
 
-      <div style={{ ...panelStyle, marginBottom: 16 }}>
-        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Price data source</p>
-        <p style={{ fontSize: 12, color: colors.textMuted, margin: 0 }}>
-          Yahoo Finance (unofficial endpoint) — the sole live price source right now. The
-          Zerodha/broker rollout plan from earlier in this project is on hold in favor of this
-          simpler, no-subscription-required approach; the Zerodha adapter code still exists in
-          the Rust engine (crates/infrastructure/src/brokers/zerodha.rs) but nothing in the UI
-          calls it anymore.
-        </p>
-      </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Clean up non-Indian tickers</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Removes any tracked ticker not on NSE/BSE — leftovers from before the country/market
-          selector was removed. Anything still genuinely held in a portfolio is left alone and
-          reported separately, never silently deleted.
+          Removes any tracked ticker not on NSE/BSE. Anything genuinely held in a portfolio is
+          left alone and reported separately, never silently deleted.
         </p>
         <button onClick={handleCleanupNonIndian} disabled={cleanupRunning}>
           {cleanupRunning ? "Cleaning up…" : "Remove non-Indian tickers"}
@@ -627,10 +602,9 @@ export function SettingsScreen({
       <div style={{ ...panelStyle, marginBottom: 16 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Zerodha (Kite Connect)</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px" }}>
-          Needs a Kite Connect subscription (₹500/month) — separate from a normal Zerodha account.
-          Unlike Upstox, there's no year-long token: a fresh login is required every trading day.
-          "Connect Zerodha" opens Zerodha's real login page in your browser; nothing runs locally
-          until you click it, and it stops listening the moment login completes or after 3 minutes.
+          Needs a Kite Connect subscription (₹500/month), separate from a normal Zerodha account.
+          Unlike Upstox, a fresh login is required every trading day — "Connect Zerodha" opens
+          Zerodha's login page in your browser.
         </p>
         <p style={{ fontSize: 12, margin: "0 0 8px" }}>
           Credentials:{" "}
@@ -678,10 +652,8 @@ export function SettingsScreen({
       <div style={{ ...panelStyle, marginBottom: 16 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Manage portfolios</p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Removing a portfolio deletes every transaction, holding, and alert scoped to it — real,
-          permanent data loss. It never touches shared instruments, so it can't affect another
-          family member's portfolio or your Watchlist. Kept here rather than in the tab bar since
-          this is rare enough not to need a control you see constantly.
+          Removing a portfolio deletes every transaction, holding, and alert scoped to it —
+          permanent. Other family members' portfolios and your Watchlist are unaffected.
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {portfolios.map((p) => (
@@ -699,10 +671,8 @@ export function SettingsScreen({
           Danger Zone
         </p>
         <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Reinstalling the app does NOT clear this data — your portfolios, holdings, and cached
-          prices live in a database file in your OS's app-data folder, completely separate from
-          the installed application. That's standard, expected behavior on every OS, not a bug.
-          Use this button if you want to wipe everything and start clean (e.g. after test data).
+          Reinstalling the app does NOT clear this data — it lives in a database file in your
+          OS's app-data folder. Use this button to wipe everything and start clean.
         </p>
         {!confirmingReset ? (
           <button onClick={() => setConfirmingReset(true)} style={{ color: colors.danger }}>

@@ -2,14 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { api, subscribeLivePriceTicks } from "../lib/tauri";
 import type { HoldingView, InstrumentView, DashboardSummary } from "../lib/types";
-import { colors, cardStyle, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, currencySymbolForExchange } from "../lib/theme";
+import { colors, cardStyle, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, currencySymbolForExchange, recommendedRefreshSeconds } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
+import { LiveStreamControl } from "../components/LiveStreamControl";
 import { AlertSetter } from "../components/AlertSetter";
 
 type Tab = "long_term" | "intraday";
 type TxnType = "buy" | "sell" | "dividend";
-
-const AUTO_REFRESH_MS = 30_000;
 
 function parseNumeric(s: string | null): number {
   if (s === null) return 0;
@@ -86,6 +85,22 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshSeconds, setRefreshSeconds] = useState(20);
+  const [refreshReason, setRefreshReason] = useState("");
+  const [refreshOverridden, setRefreshOverridden] = useState(false);
+
+  useEffect(() => {
+    api
+      .getMarketDataPriority()
+      .then((order) => {
+        const activeSource = order.split(",")[0]?.trim() || "yahoo";
+        const { seconds, reason } = recommendedRefreshSeconds(activeSource, holdings.length);
+        setRefreshReason(reason);
+        if (!refreshOverridden) setRefreshSeconds(seconds);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdings.length]);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [csvFileName, setCsvFileName] = useState<string | null>(null);
   const [csvContent, setCsvContent] = useState<string | null>(null);
@@ -174,13 +189,13 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
     if (autoRefresh) {
       intervalRef.current = setInterval(() => {
         handleRefreshPrices();
-      }, AUTO_REFRESH_MS);
+      }, refreshSeconds * 1000);
     }
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefresh, portfolioId]);
+  }, [autoRefresh, refreshSeconds, portfolioId]);
 
   async function handleAddTicker() {
     const trimmed = newTicker.trim();
@@ -383,9 +398,8 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
     <div style={{ padding: 24 }}>
       <h1 style={{ fontSize: 20, color: colors.navy, marginBottom: 4 }}>Holdings</h1>
       <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0 }}>
-        Split into two tabs deliberately, per the wireframe — intraday and long-term positions
-        settle differently (same-day close vs. tax-lot tracking) and shouldn't be confused with
-        each other. This tab's holdings belong only to the portfolio selected above.
+        Intraday and long-term positions settle differently and are kept in separate tabs. Shows
+        only the portfolio selected above.
       </p>
 
       {summary && (
@@ -450,8 +464,37 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
             </button>
             <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
               <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-              Auto-refresh every 30s
+              Auto-refresh every
             </label>
+            <input
+              type="number"
+              min={1}
+              value={refreshSeconds}
+              onChange={(e) => {
+                setRefreshOverridden(true);
+                setRefreshSeconds(Math.max(1, Number(e.target.value) || 1));
+              }}
+              style={{ width: 60, fontSize: 12 }}
+            />
+            <span style={{ fontSize: 12 }}>sec</span>
+            {refreshOverridden && (
+              <button
+                onClick={() => {
+                  setRefreshOverridden(false);
+                  api
+                    .getMarketDataPriority()
+                    .then((order) => {
+                      const activeSource = order.split(",")[0]?.trim() || "yahoo";
+                      setRefreshSeconds(recommendedRefreshSeconds(activeSource, holdings.length).seconds);
+                    })
+                    .catch(() => {});
+                }}
+                style={{ fontSize: 11 }}
+              >
+                Reset to recommended
+              </button>
+            )}
+            <LiveStreamControl symbols={holdings.map((h) => h.symbol)} />
             <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5 }}>
               SI benchmark rate:
               <input
@@ -468,6 +511,12 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
             could break or get rate-limited without notice, especially with auto-refresh left on.
             Not a real-time feed.
           </p>
+          {refreshReason && (
+            <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 0, marginBottom: 10 }}>
+              {refreshOverridden ? "Custom interval — " : "Recommended for your current priority source: "}
+              {refreshReason}
+            </p>
+          )}
           {refreshMsg && (
             <p style={{ fontSize: 12, marginBottom: 12, color: refreshMsg.startsWith("Failed") ? colors.danger : colors.textMuted }}>
               {refreshMsg}

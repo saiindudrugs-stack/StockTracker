@@ -57,8 +57,8 @@ mod tests {
     async fn set_then_get_round_trips() {
         let pool = SqlitePool::open_in_memory().unwrap();
         let settings = SqliteAppSettings::new(pool);
-        settings.set("alpha_vantage_api_key", "ABC123").await.unwrap();
-        assert_eq!(settings.get("alpha_vantage_api_key").await.unwrap(), Some("ABC123".to_string()));
+        settings.set("some_api_key", "ABC123").await.unwrap();
+        assert_eq!(settings.get("some_api_key").await.unwrap(), Some("ABC123".to_string()));
     }
 
     #[tokio::test]

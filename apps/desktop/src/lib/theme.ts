@@ -138,6 +138,24 @@ export function phaseColor(phase: string): string {
 // threshold the user asked for.
 export const BIG_MOVE_THRESHOLD = 0.035;
 
+/// Recommended auto-refresh interval for a whole-watchlist pass — one
+/// quote request per tracked symbol, not a single batched call — based on
+/// each source's REAL documented rate limit, not a guess:
+/// - Upstox: 25 req/sec, 250/min, 1000/30min (official docs) — generous.
+///   A watchlist of dozens of symbols refreshing every few seconds stays
+///   comfortably inside that.
+/// - Yahoo: no documented limit (unofficial, scrapes their site) — kept
+///   deliberately cautious regardless, since "no limit" isn't the same
+///   as "safe to hammer."
+export function recommendedRefreshSeconds(source: string, symbolCount: number): { seconds: number; reason: string } {
+  switch (source) {
+    case "upstox":
+      return { seconds: 5, reason: "Upstox allows 25 requests/second — a wide margin even for a large watchlist." };
+    default:
+      return { seconds: 20, reason: "Yahoo has no documented rate limit, but it's an unofficial, scraped endpoint — kept cautious regardless." };
+  }
+}
+
 /// Subtle full-row background tint scaled by the day's move — a quick
 /// glance at the row shading should tell you which stocks moved today
 /// without needing to read the percentage column at all. Deliberately

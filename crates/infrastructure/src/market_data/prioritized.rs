@@ -17,7 +17,7 @@ pub const MARKET_DATA_PRIORITY_SETTING: &str = "market_data_priority_order";
 /// Used when no priority has been explicitly set — same order as the
 /// original hardcoded chain, so behavior is unchanged until the user
 /// actually opens Settings and reorders something.
-pub const DEFAULT_PRIORITY_ORDER: &str = "upstox,yahoo,alpha_vantage";
+pub const DEFAULT_PRIORITY_ORDER: &str = "upstox,yahoo";
 
 pub struct PrioritizedMarketDataProvider {
     providers: Vec<(String, Arc<dyn MarketDataProvider>)>,
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn defaults_to_upstox_yahoo_alpha_vantage_when_unset() {
+    async fn defaults_to_upstox_then_yahoo_when_unset() {
         let pool = SqlitePool::open_in_memory().unwrap();
         let settings = Arc::new(SqliteAppSettings::new(pool));
         let call_order = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -148,13 +148,12 @@ mod tests {
             vec![
                 ("yahoo".to_string(), fake("yahoo", true, 100, call_order.clone())),
                 ("upstox".to_string(), fake("upstox", true, 200, call_order.clone())),
-                ("alpha_vantage".to_string(), fake("alpha_vantage", true, 300, call_order.clone())),
             ],
             settings,
         );
 
         let _ = provider.fetch_quote("X", "NSE").await;
-        assert_eq!(*call_order.lock().unwrap(), vec!["upstox".to_string(), "yahoo".to_string(), "alpha_vantage".to_string()]);
+        assert_eq!(*call_order.lock().unwrap(), vec!["upstox".to_string(), "yahoo".to_string()]);
     }
 
     #[tokio::test]

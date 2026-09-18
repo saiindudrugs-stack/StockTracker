@@ -17,6 +17,13 @@ export interface DashboardSummary {
   holdings_missing_price: number;
 }
 
+export interface AlphaVantageOverviewView {
+  market_cap: string | null;
+  dividend_yield: string | null;
+  fetched_at: string;
+  is_stale: boolean;
+}
+
 export interface PortfolioSummaryRow {
   portfolio_id: string;
   portfolio_name: string;
