@@ -143,7 +143,12 @@ impl UpstoxProvider {
             .ok_or_else(|| MarketDataError::NoData(format!("{symbol}: no match from Upstox instrument search")))
     }
 
-    async fn resolve_instrument_key(&self, symbol: &str, exchange: &str) -> Result<String, MarketDataError> {
+    /// Public so callers needing instrument_key resolution outside a
+    /// quote fetch (e.g. resolving symbols before starting a live stream)
+    /// get the SAME on-demand search-and-cache behavior, rather than a
+    /// second, cache-only lookup that silently requires the old manual
+    /// "Refresh Instrument List" step this method no longer needs.
+    pub async fn resolve_instrument_key(&self, symbol: &str, exchange: &str) -> Result<String, MarketDataError> {
         let primary = exchange.to_uppercase();
         if let Some(key) = self
             .instruments

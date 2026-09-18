@@ -164,21 +164,28 @@ export function NewsAndFundamentalsScreen() {
             )}
 
             {(overview || overviewError) && (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, marginBottom: 16 }}>
-                <div style={{ ...panelStyle, padding: 10 }}>
-                  <div style={{ fontSize: 10, color: colors.textMuted }}>
-                    Market cap {overview?.is_stale ? "(cached, refreshing)" : ""}
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                  <div style={{ ...panelStyle, padding: 10 }}>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>
+                      Market cap {overview?.is_stale ? "(cached, refreshing)" : ""}
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{overview ? fmtMoney(overview.market_cap) : "—"}</div>
                   </div>
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>{overview ? fmtMoney(overview.market_cap) : "—"}</div>
+                  <div style={{ ...panelStyle, padding: 10 }}>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>
+                      Div yield {overview?.is_stale ? "(cached, refreshing)" : ""}
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>
+                      {overview?.dividend_yield ? `${(parseFloat(overview.dividend_yield) * 100).toFixed(2)}%` : "—"}
+                    </div>
+                  </div>
                 </div>
-                <div style={{ ...panelStyle, padding: 10 }}>
-                  <div style={{ fontSize: 10, color: colors.textMuted }}>
-                    Div yield {overview?.is_stale ? "(cached, refreshing)" : ""}
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>
-                    {overview?.dividend_yield ? `${(parseFloat(overview.dividend_yield) * 100).toFixed(2)}%` : "—"}
-                  </div>
-                </div>
+                {!overview && overviewError && (
+                  <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 4, marginBottom: 0 }}>
+                    Unavailable: {overviewError}
+                  </p>
+                )}
               </div>
             )}
 

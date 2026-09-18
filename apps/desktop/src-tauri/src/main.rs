@@ -1823,14 +1823,31 @@ async fn save_market_data_priority(state: State<'_, AppState>, order: String) ->
 }
 
 #[tauri::command]
+/// Self-healing: a name can go stale in the stored setting (e.g.
+/// Alpha Vantage was removed as a quote source) without the setting
+/// itself ever being touched — a raw, un-validated read would keep
+/// showing that stale name in Settings as a permanently broken row.
+/// Filters against what's actually registered, and persists the
+/// cleaned value back so this fixes itself once rather than re-filtering
+/// on every read forever.
+#[tauri::command]
 async fn get_market_data_priority(state: State<'_, AppState>) -> Result<String, String> {
-    Ok(state
+    let raw = state
         .app_settings
         .get(MARKET_DATA_PRIORITY_SETTING)
         .await
         .map_err(|e| e.to_string())?
         .filter(|o| !o.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_PRIORITY_ORDER.to_string()))
+        .unwrap_or_else(|| DEFAULT_PRIORITY_ORDER.to_string());
+
+    let valid_names = state.market_data.registered_provider_names();
+    let cleaned: Vec<&str> = raw.split(',').map(|s| s.trim()).filter(|s| !s.is_empty() && valid_names.iter().any(|v| v == s)).collect();
+    let cleaned_order = if cleaned.is_empty() { DEFAULT_PRIORITY_ORDER.to_string() } else { cleaned.join(",") };
+
+    if cleaned_order != raw {
+        let _ = state.app_settings.set(MARKET_DATA_PRIORITY_SETTING, &cleaned_order).await;
+    }
+    Ok(cleaned_order)
 }
 
 const FLASH_THRESHOLD_SETTING: &str = "flash_threshold_pct";
@@ -2074,20 +2091,29 @@ struct LivePriceTickEvent {
 /// stream is stopped first — only one active at a time.
 #[tauri::command]
 async fn start_live_price_stream(state: State<'_, AppState>, app: tauri::AppHandle, symbols: Vec<String>) -> Result<usize, String> {
+    if symbols.is_empty() {
+        return Err("no holdings to stream — this portfolio has no tracked symbols yet".to_string());
+    }
+
     let instruments = state.instruments.list_all().await.map_err(|e| e.to_string())?;
+    let upstox = UpstoxProvider::new(state.app_settings.clone(), state.upstox_instruments.clone());
     let mut instrument_keys = Vec::new();
     let mut key_to_symbol = std::collections::HashMap::new();
 
     for symbol in &symbols {
         let Some(instrument) = instruments.iter().find(|i| &i.symbol == symbol) else { continue };
-        if let Ok(Some(key)) = state.upstox_instruments.get_instrument_key(&instrument.symbol, &instrument.exchange).await {
+        // Same on-demand search-and-cache resolution fetch_quote uses —
+        // no separate manual refresh required, and this stays correct
+        // if that resolution logic ever changes, since there's only one
+        // implementation of it now.
+        if let Ok(key) = upstox.resolve_instrument_key(&instrument.symbol, &instrument.exchange).await {
             key_to_symbol.insert(key.clone(), instrument.symbol.clone());
             instrument_keys.push(key);
         }
     }
 
     if instrument_keys.is_empty() {
-        return Err("none of these symbols have a cached Upstox instrument_key — refresh the instrument list in Settings first".to_string());
+        return Err(format!("couldn't resolve any of {} symbol(s) via Upstox — check the Upstox connection in Settings", symbols.len()));
     }
 
     let resolved_count = instrument_keys.len();

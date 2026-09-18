@@ -29,6 +29,14 @@ impl PrioritizedMarketDataProvider {
         Self { providers, settings }
     }
 
+    /// The names of providers actually registered — used to validate a
+    /// stored priority order against reality, since a name can go stale
+    /// (e.g. a provider removed in an update) without the stored setting
+    /// ever being touched.
+    pub fn registered_provider_names(&self) -> Vec<String> {
+        self.providers.iter().map(|(name, _)| name.clone()).collect()
+    }
+
     /// Reads the current priority order from settings and returns
     /// providers in that sequence. Any name in the setting that doesn't
     /// match a registered provider is ignored (rather than erroring) —
@@ -92,6 +100,17 @@ impl MarketDataProvider for PrioritizedMarketDataProvider {
 mod tests {
     use super::*;
     use crate::sqlite::SqlitePool;
+
+    #[tokio::test]
+    async fn registered_provider_names_reflects_construction_order() {
+        let pool = SqlitePool::open_in_memory().unwrap();
+        let settings = Arc::new(SqliteAppSettings::new(pool));
+        let provider = PrioritizedMarketDataProvider::new(
+            vec![("upstox".to_string(), fake("upstox", true, 0, Arc::new(std::sync::Mutex::new(Vec::new())))), ("yahoo".to_string(), fake("yahoo", true, 0, Arc::new(std::sync::Mutex::new(Vec::new()))))],
+            settings,
+        );
+        assert_eq!(provider.registered_provider_names(), vec!["upstox".to_string(), "yahoo".to_string()]);
+    }
 
     struct FakeProvider {
         should_fail: bool,
