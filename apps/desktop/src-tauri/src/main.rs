@@ -970,6 +970,47 @@ async fn get_dashboard_summary(state: State<'_, AppState>, portfolio_id: String)
 }
 
 #[derive(Serialize)]
+struct PortfolioSummaryRow {
+    portfolio_id: String,
+    portfolio_name: String,
+    net_worth: String,
+    unrealized_pnl: String,
+    realized_pnl: String,
+    xirr_pct: Option<f64>,
+}
+
+/// One row per portfolio (every family member's tab, not just the one
+/// currently selected) — the "consolidated, compare everyone at a
+/// glance" view. Reuses the exact same DashboardSummaryUseCase and XIRR
+/// computation each individual portfolio's own Dashboard already calls;
+/// this just loops it across all of them rather than introducing a
+/// second calculation path that could drift out of sync with the
+/// individual-portfolio numbers.
+#[tauri::command]
+async fn get_all_portfolios_summary(state: State<'_, AppState>) -> Result<Vec<PortfolioSummaryRow>, String> {
+    let portfolios = state.portfolios.list_all().await.map_err(|e| e.to_string())?;
+    let use_case = DashboardSummaryUseCase::new(state.holdings.clone(), state.prices.clone());
+
+    let mut rows = Vec::with_capacity(portfolios.len());
+    for portfolio in portfolios {
+        let summary = use_case.execute(portfolio.id).await.map_err(|e| e.to_string())?;
+        // XIRR can genuinely fail to compute (e.g. a portfolio with no
+        // transactions yet) — that's not a reason to drop the whole row,
+        // just to show it without an XIRR figure.
+        let xirr_pct = compute_portfolio_xirr(state.clone(), portfolio.id.to_string()).await.ok().map(|x| x * 100.0);
+        rows.push(PortfolioSummaryRow {
+            portfolio_id: portfolio.id.to_string(),
+            portfolio_name: portfolio.name,
+            net_worth: summary.net_worth.round_dp(2).to_string(),
+            unrealized_pnl: summary.overall_unrealized_pnl.round_dp(2).to_string(),
+            realized_pnl: summary.overall_realized_pnl.round_dp(2).to_string(),
+            xirr_pct,
+        });
+    }
+    Ok(rows)
+}
+
+#[derive(Serialize)]
 struct MarketSummaryView {
     country: String,
     currency_symbol: String,
@@ -3074,6 +3115,7 @@ fn main() {
             delete_portfolio,
             get_dashboard_summary,
             get_dashboard_by_market,
+            get_all_portfolios_summary,
             get_tax_summary,
             get_tax_loss_harvesting_candidates,
             list_holdings,

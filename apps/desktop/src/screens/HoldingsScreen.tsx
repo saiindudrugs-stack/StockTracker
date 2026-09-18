@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { api } from "../lib/tauri";
-import type { HoldingView, InstrumentView } from "../lib/types";
-import { colors, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, currencySymbolForExchange } from "../lib/theme";
+import { api, subscribeLivePriceTicks } from "../lib/tauri";
+import type { HoldingView, InstrumentView, DashboardSummary } from "../lib/types";
+import { colors, cardStyle, panelStyle, dayChangeRowTint, zebraRowTint, flashAnimation, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, currencySymbolForExchange } from "../lib/theme";
 import { ConfirmButton } from "../components/ConfirmButton";
 import { AlertSetter } from "../components/AlertSetter";
 
@@ -27,6 +27,50 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
   // once and converted from a percentage (e.g. 3.5) to the fraction
   // flashAnimation expects (0.035).
   const [flashThreshold, setFlashThreshold] = useState(0.035);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+
+  useEffect(() => {
+    api.getDashboardSummary(portfolioId).then(setSummary).catch(() => {});
+  }, [portfolioId]);
+
+  // Same live-tick event Watchlist's streaming toggle emits into — a
+  // holding's live price ticking updates this bar's net worth/unrealized
+  // P/L in place, without needing its own separate streaming toggle.
+  // Since this only recomputes from a price that changed, it stays in
+  // sync with whatever streaming session (if any) is already running.
+  useEffect(() => {
+    const unsubscribe = subscribeLivePriceTicks((tick) => {
+      setHoldings((prev) => {
+        const idx = prev.findIndex((h) => h.symbol === tick.symbol);
+        if (idx === -1) return prev;
+        const holding = prev[idx];
+        const oldPrice = holding.last_price ? parseFloat(holding.last_price) : null;
+        if (oldPrice == null) return prev;
+        const priceDelta = tick.price - oldPrice;
+        const qty = parseFloat(holding.quantity);
+        const next = [...prev];
+        next[idx] = {
+          ...holding,
+          last_price: tick.price.toString(),
+          market_value: holding.market_value ? (parseFloat(holding.market_value) + priceDelta * qty).toString() : holding.market_value,
+          unrealized_pnl: holding.unrealized_pnl ? (parseFloat(holding.unrealized_pnl) + priceDelta * qty).toString() : holding.unrealized_pnl,
+        };
+        // Recompute the summary bar's totals from the same delta, rather
+        // than re-fetching the whole dashboard summary on every tick.
+        setSummary((s) =>
+          s
+            ? {
+                ...s,
+                net_worth: (parseFloat(s.net_worth) + priceDelta * qty).toString(),
+                overall_unrealized_pnl: (parseFloat(s.overall_unrealized_pnl) + priceDelta * qty).toString(),
+              }
+            : s
+        );
+        return next;
+      });
+    });
+    return unsubscribe;
+  }, []);
   useEffect(() => {
     api
       .getFlashThreshold()
@@ -343,6 +387,27 @@ export function HoldingsScreen({ portfolioId, defaultExchange }: { portfolioId: 
         settle differently (same-day close vs. tax-lot tracking) and shouldn't be confused with
         each other. This tab's holdings belong only to the portfolio selected above.
       </p>
+
+      {summary && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 16 }}>
+          <div style={cardStyle}>
+            <div style={{ fontSize: 12, color: colors.textMuted }}>Net worth</div>
+            <div style={{ fontSize: 18, fontWeight: 600 }}>₹{fmtMoney(summary.net_worth)}</div>
+          </div>
+          <div style={cardStyle}>
+            <div style={{ fontSize: 12, color: colors.textMuted }}>Unrealized P/L</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: pnlColor(parseFloat(summary.overall_unrealized_pnl)) }}>
+              ₹{fmtMoney(summary.overall_unrealized_pnl)}
+            </div>
+          </div>
+          <div style={cardStyle}>
+            <div style={{ fontSize: 12, color: colors.textMuted }}>Realized P/L</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: pnlColor(parseFloat(summary.overall_realized_pnl)) }}>
+              ₹{fmtMoney(summary.overall_realized_pnl)}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <button

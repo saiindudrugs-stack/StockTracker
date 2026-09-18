@@ -17,6 +17,15 @@ export interface DashboardSummary {
   holdings_missing_price: number;
 }
 
+export interface PortfolioSummaryRow {
+  portfolio_id: string;
+  portfolio_name: string;
+  net_worth: string;
+  unrealized_pnl: string;
+  realized_pnl: string;
+  xirr_pct: number | null;
+}
+
 export interface MarketSummaryView {
   country: string;
   currency_symbol: string;

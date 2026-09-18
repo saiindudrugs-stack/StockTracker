@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/tauri";
-import type { AlertRuleView, DashboardSummary, HoldingView, MarketSummaryView, TaxSummaryView, TaxLossHarvestingView } from "../lib/types";
-import { cardStyle, colors, panelStyle, pnlColor, fmtMoney } from "../lib/theme";
+import { api, subscribeLivePriceTicks } from "../lib/tauri";
+import type { AlertRuleView, DashboardSummary, HoldingView, MarketSummaryView, TaxSummaryView, TaxLossHarvestingView, PortfolioSummaryRow } from "../lib/types";
+import { cardStyle, colors, panelStyle, pnlColor, fmtMoney, tableHeaderRow, tableHeaderCell, firstHeaderCell, lastHeaderCell, zebraRowTint } from "../lib/theme";
 
 // A few distinct, low-saturation colors for the sector breakdown bars —
 // enough for a handful of sectors; this is demo-scale data (2 instruments),
@@ -50,7 +50,7 @@ function aiTagColor(tag: AiTag): string {
   }
 }
 
-export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
+export function DashboardScreen({ portfolioId, isMyPortfolio }: { portfolioId: string; isMyPortfolio?: boolean }) {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [holdings, setHoldings] = useState<HoldingView[]>([]);
   const [xirr, setXirr] = useState<number | null>(null);
@@ -58,6 +58,35 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [alertRules, setAlertRules] = useState<AlertRuleView[]>([]);
   const [marketSummaries, setMarketSummaries] = useState<MarketSummaryView[]>([]);
+
+  const [allPortfolios, setAllPortfolios] = useState<PortfolioSummaryRow[] | null>(null);
+
+  useEffect(() => {
+    if (!isMyPortfolio) return;
+    api.getAllPortfoliosSummary().then(setAllPortfolios).catch(() => {});
+  }, [isMyPortfolio]);
+
+  // Re-fetches the whole consolidated table on a live tick rather than
+  // trying to recompute each portfolio's totals incrementally client-side
+  // — that would need this screen to also hold every portfolio's full
+  // holdings list just to know which quantity a tick's price-change
+  // applies to, a much bigger data-fetching burden than just asking the
+  // backend for fresh totals. Debounced so a burst of ticks doesn't
+  // trigger a re-fetch per tick.
+  useEffect(() => {
+    if (!isMyPortfolio) return;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeLivePriceTicks(() => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        api.getAllPortfoliosSummary().then(setAllPortfolios).catch(() => {});
+      }, 1500);
+    });
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      unsubscribe();
+    };
+  }, [isMyPortfolio]);
 
   const AI_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
   const [availableAiProviders, setAvailableAiProviders] = useState<string[]>([]);
@@ -274,6 +303,42 @@ export function DashboardScreen({ portfolioId }: { portfolioId: string }) {
           </div>
         </div>
         </>
+      )}
+
+      {isMyPortfolio && allPortfolios && allPortfolios.length > 0 && (
+        <div style={{ ...panelStyle, marginBottom: 16 }}>
+          <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 8px", fontWeight: 600 }}>
+            Consolidated — all portfolios
+          </p>
+          <p style={{ fontSize: 11, color: colors.textMuted, margin: "0 0 10px" }}>
+            Every family portfolio side by side. Updates automatically a moment after any live
+            price tick, if a live stream is running (Watchlist).
+          </p>
+          <table className="data-table" style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+            <thead>
+              <tr style={tableHeaderRow}>
+                <th style={{ ...tableHeaderCell, ...firstHeaderCell }}>Portfolio</th>
+                <th style={tableHeaderCell}>Net worth</th>
+                <th style={tableHeaderCell}>Unrealized P/L</th>
+                <th style={tableHeaderCell}>Realized P/L</th>
+                <th style={{ ...tableHeaderCell, ...lastHeaderCell }}>XIRR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {allPortfolios.map((p, i) => (
+                <tr key={p.portfolio_id} style={{ background: zebraRowTint(i) }}>
+                  <td style={{ padding: "6px 8px 6px 0", fontWeight: 600 }}>{p.portfolio_name}</td>
+                  <td style={{ padding: "6px 8px" }}>₹{fmtMoney(p.net_worth)}</td>
+                  <td style={{ padding: "6px 8px", color: pnlColor(parseFloat(p.unrealized_pnl)) }}>₹{fmtMoney(p.unrealized_pnl)}</td>
+                  <td style={{ padding: "6px 8px", color: pnlColor(parseFloat(p.realized_pnl)) }}>₹{fmtMoney(p.realized_pnl)}</td>
+                  <td style={{ padding: "6px 8px", color: p.xirr_pct != null ? pnlColor(p.xirr_pct) : undefined }}>
+                    {p.xirr_pct != null ? `${p.xirr_pct.toFixed(2)}%` : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 12, marginTop: 8 }}>

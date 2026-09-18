@@ -150,7 +150,12 @@ export default function App() {
           </p>
         ) : (
           <>
-            {screen === "dashboard" && activePortfolioId && <DashboardScreen portfolioId={activePortfolioId} />}
+            {screen === "dashboard" && activePortfolioId && (
+              <DashboardScreen
+                portfolioId={activePortfolioId}
+                isMyPortfolio={portfolios.find((p) => p.id === activePortfolioId)?.name === "My Portfolio"}
+              />
+            )}
             {screen === "holdings" && activePortfolioId && <HoldingsScreen portfolioId={activePortfolioId} defaultExchange={selectedMarket.defaultExchange} />}
             {screen === "mutual-funds" && activePortfolioId && <MutualFundsScreen portfolioId={activePortfolioId} />}
             {screen === "watchlist" && <WatchlistScreen defaultExchange={selectedMarket.defaultExchange} />}

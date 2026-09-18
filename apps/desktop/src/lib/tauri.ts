@@ -9,6 +9,7 @@ import type {
   InstrumentView,
   MarketSnapshotView,
   MarketSummaryView,
+  PortfolioSummaryRow,
   TaxSummaryView,
   TaxLossHarvestingView,
   MfHoldingView,
@@ -38,6 +39,7 @@ export const api = {
     invoke<DashboardSummary>("get_dashboard_summary", { portfolioId }),
   getDashboardByMarket: (portfolioId: string) =>
     invoke<MarketSummaryView[]>("get_dashboard_by_market", { portfolioId }),
+  getAllPortfoliosSummary: () => invoke<PortfolioSummaryRow[]>("get_all_portfolios_summary"),
   getTaxSummary: (portfolioId: string) => invoke<TaxSummaryView>("get_tax_summary", { portfolioId }),
   getTaxLossHarvestingCandidates: (portfolioId: string) =>
     invoke<TaxLossHarvestingView>("get_tax_loss_harvesting_candidates", { portfolioId }),
