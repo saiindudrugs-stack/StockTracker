@@ -1865,7 +1865,6 @@ async fn save_market_data_priority(state: State<'_, AppState>, order: String) ->
     state.app_settings.set(MARKET_DATA_PRIORITY_SETTING, &order).await.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
 /// Self-healing: a name can go stale in the stored setting (e.g.
 /// Alpha Vantage was removed as a quote source) without the setting
 /// itself ever being touched — a raw, un-validated read would keep
