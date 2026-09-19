@@ -329,55 +329,72 @@ async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
 
-    let mut view = if let Some(v) = try_upstox_fundamentals(&state, &instrument.symbol, &instrument.exchange).await {
-        v
-    } else {
-        // A Yahoo failure here used to abort the whole command via `?`
-        // before Alpha Vantage ever got a chance to run as a fallback —
-        // a real bug: when both Upstox (unconfigured) and Yahoo (endpoint
-        // unreliable) failed, the user got nothing at all even with a
-        // working Alpha Vantage key sitting right there. Now a Yahoo
-        // failure just produces an empty view and keeps going; the
-        // gap-fill step below is what actually has a chance to populate
-        // it from Alpha Vantage instead.
-        match state.yahoo_direct.fetch_fundamentals(&instrument.symbol, &instrument.exchange).await {
-            Ok(f) => FundamentalsView {
-                sector: f.sector,
-                industry: f.industry,
-                description: f.description,
-                market_cap: f.market_cap.map(|d| d.to_string()),
-                pe_ratio: f.pe_ratio.map(|d| d.to_string()),
-                pb_ratio: None,
-                roe: None,
-                roce: None,
-                dividend_yield: f.dividend_yield.map(|d| d.to_string()),
-                week52_high: f.week52_high.map(|d| d.to_string()),
-                week52_low: f.week52_low.map(|d| d.to_string()),
-                volume: None,
-                revenue_by_period: f
-                    .revenue_by_period
-                    .into_iter()
-                    .map(|p| RevenuePeriodView { period_end: p.period_end, revenue: p.revenue.to_string(), net_income: p.net_income.map(|d| d.to_string()) })
-                    .collect(),
-                source: "yahoo".to_string(),
-            },
-            Err(_) => FundamentalsView {
-                sector: None,
-                industry: None,
-                description: None,
-                market_cap: None,
-                pe_ratio: None,
-                pb_ratio: None,
-                roe: None,
-                roce: None,
-                dividend_yield: None,
-                week52_high: None,
-                week52_low: None,
-                volume: None,
-                revenue_by_period: Vec::new(),
-                source: "none".to_string(),
-            },
-        }
+    // Per-FIELD merging, not per-SOURCE fallback: Upstox's own fundamentals
+    // suite documents that it simply doesn't return market_cap,
+    // dividend_yield, or week52_high/low at all — those fields came back
+    // permanently empty for any symbol Upstox otherwise succeeded on,
+    // even though Yahoo provides exactly those fields and was sitting
+    // right there unused. Now both sources are tried and merged field by
+    // field, each field keeping whichever source actually has it, Upstox
+    // preferred where both do (it's the more current, authoritative
+    // source for the fields it does cover).
+    let upstox_view = try_upstox_fundamentals(&state, &instrument.symbol, &instrument.exchange).await;
+    let yahoo_view = state.yahoo_direct.fetch_fundamentals(&instrument.symbol, &instrument.exchange).await.ok().map(|f| FundamentalsView {
+        sector: f.sector,
+        industry: f.industry,
+        description: f.description,
+        market_cap: f.market_cap.map(|d| d.to_string()),
+        pe_ratio: f.pe_ratio.map(|d| d.to_string()),
+        pb_ratio: None,
+        roe: None,
+        roce: None,
+        dividend_yield: f.dividend_yield.map(|d| d.to_string()),
+        week52_high: f.week52_high.map(|d| d.to_string()),
+        week52_low: f.week52_low.map(|d| d.to_string()),
+        volume: None,
+        revenue_by_period: f
+            .revenue_by_period
+            .into_iter()
+            .map(|p| RevenuePeriodView { period_end: p.period_end, revenue: p.revenue.to_string(), net_income: p.net_income.map(|d| d.to_string()) })
+            .collect(),
+        source: "yahoo".to_string(),
+    });
+
+    let mut view = match (upstox_view, yahoo_view) {
+        (Some(u), Some(y)) => FundamentalsView {
+            sector: u.sector.or(y.sector),
+            industry: u.industry.or(y.industry),
+            description: u.description.or(y.description),
+            market_cap: u.market_cap.or(y.market_cap),
+            pe_ratio: u.pe_ratio.or(y.pe_ratio),
+            pb_ratio: u.pb_ratio.or(y.pb_ratio),
+            roe: u.roe.or(y.roe),
+            roce: u.roce.or(y.roce),
+            dividend_yield: u.dividend_yield.or(y.dividend_yield),
+            week52_high: u.week52_high.or(y.week52_high),
+            week52_low: u.week52_low.or(y.week52_low),
+            volume: None,
+            revenue_by_period: if u.revenue_by_period.is_empty() { y.revenue_by_period } else { u.revenue_by_period },
+            source: "upstox+yahoo".to_string(),
+        },
+        (Some(u), None) => u,
+        (None, Some(y)) => y,
+        (None, None) => FundamentalsView {
+            sector: None,
+            industry: None,
+            description: None,
+            market_cap: None,
+            pe_ratio: None,
+            pb_ratio: None,
+            roe: None,
+            roce: None,
+            dividend_yield: None,
+            week52_high: None,
+            week52_low: None,
+            volume: None,
+            revenue_by_period: Vec::new(),
+            source: "none".to_string(),
+        },
     };
 
     // Volume is always fetched live (via the same priority-ordered
@@ -1527,27 +1544,31 @@ async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Resu
         }
     });
 
-    // Best-effort gap-fill: Upstox's own quote response has no 52-week
-    // range field at all (confirmed against their documented response
-    // shape — it's simply not part of that endpoint), unlike Yahoo's,
-    // which does. Only fetched when actually missing, so this costs
-    // nothing when Yahoo itself is already the source that succeeded.
-    let (week52_high, week52_low) = if quote.week52_high.is_none() && quote.week52_low.is_none() {
-        match state.yahoo_direct.fetch_quote(&instrument.symbol, &instrument.exchange).await {
-            Ok(yahoo_quote) => (yahoo_quote.week52_high, yahoo_quote.week52_low),
-            Err(_) => (None, None),
-        }
+    // Best-effort gap-fill, one Yahoo call covering every field Upstox's
+    // quote can leave empty — its OHLC block is `Option`, so day_high/
+    // day_low can be missing same as week52 (which Upstox's endpoint
+    // never provides at all, confirmed against their documented
+    // response shape). Only fetched when at least one of these is
+    // actually missing, so this costs nothing when Yahoo is already the
+    // source that succeeded, or when Upstox's response was complete.
+    let needs_gap_fill = quote.day_high.is_none() || quote.day_low.is_none() || quote.week52_high.is_none() || quote.week52_low.is_none();
+    let yahoo_gap_fill = if needs_gap_fill {
+        state.yahoo_direct.fetch_quote(&instrument.symbol, &instrument.exchange).await.ok()
     } else {
-        (quote.week52_high, quote.week52_low)
+        None
     };
+    let day_high = quote.day_high.or_else(|| yahoo_gap_fill.as_ref().and_then(|q| q.day_high));
+    let day_low = quote.day_low.or_else(|| yahoo_gap_fill.as_ref().and_then(|q| q.day_low));
+    let week52_high = quote.week52_high.or_else(|| yahoo_gap_fill.as_ref().and_then(|q| q.week52_high));
+    let week52_low = quote.week52_low.or_else(|| yahoo_gap_fill.as_ref().and_then(|q| q.week52_low));
 
     Ok(MarketSnapshotView {
         symbol: instrument.symbol,
         exchange: instrument.exchange,
         price: quote.price.to_string(),
         previous_close: previous_close.map(|p| p.to_string()),
-        day_high: quote.day_high.map(|d| d.to_string()),
-        day_low: quote.day_low.map(|d| d.to_string()),
+        day_high: day_high.map(|d| d.to_string()),
+        day_low: day_low.map(|d| d.to_string()),
         week52_high: week52_high.map(|d| d.to_string()),
         week52_low: week52_low.map(|d| d.to_string()),
         volume: quote.volume,
