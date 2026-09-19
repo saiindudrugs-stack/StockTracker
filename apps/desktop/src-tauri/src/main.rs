@@ -266,321 +266,6 @@ async fn list_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentVi
     Ok(all.into_iter().map(|i| InstrumentView { symbol: i.symbol, sector: i.sector, exchange: i.exchange }).collect())
 }
 
-/// Equities only (no mutual funds) — the left-pane ticker list on the News
-/// & Fundamentals screen, since revenue/fundamentals/news don't apply to a
-/// mutual fund unit the same way they do a company.
-#[tauri::command]
-async fn list_equity_instruments(state: State<'_, AppState>) -> Result<Vec<InstrumentView>, String> {
-    let equities = state.instruments.list_by_asset_class(AssetClass::Equity).await.map_err(|e| e.to_string())?;
-    Ok(equities.into_iter().map(|i| InstrumentView { symbol: i.symbol, sector: i.sector, exchange: i.exchange }).collect())
-}
-
-#[derive(Serialize)]
-struct RevenuePeriodView {
-    period_end: String,
-    revenue: String,
-    net_income: Option<String>,
-}
-
-#[derive(Serialize)]
-struct FundamentalsView {
-    sector: Option<String>,
-    industry: Option<String>,
-    description: Option<String>,
-    market_cap: Option<String>,
-    pe_ratio: Option<String>,
-    /// Upstox-only fields — None when the Yahoo fallback path is the one
-    /// that actually succeeded, since Yahoo's fundamentals fetch doesn't
-    /// carry these.
-    pb_ratio: Option<String>,
-    roe: Option<String>,
-    roce: Option<String>,
-    dividend_yield: Option<String>,
-    week52_high: Option<String>,
-    week52_low: Option<String>,
-    /// Today's trading volume — not part of any "fundamentals" endpoint
-    /// (it's a live quote field, not a static company metric), but the
-    /// News screen wants it shown alongside fundamentals, so it's sourced
-    /// from the same priority-ordered market_data provider already used
-    /// everywhere else in this app, not a new data source.
-    volume: Option<u64>,
-    revenue_by_period: Vec<RevenuePeriodView>,
-    /// Which source actually answered — surfaced to the frontend so it
-    /// can be honest about where the numbers came from, same spirit as
-    /// every other "here's what this actually is" disclosure in this app.
-    source: String,
-}
-
-/// Portfolio-agnostic, like get_market_snapshot — fundamentals are a
-/// property of the company, not of any one portfolio's holding of it.
-/// Tries Upstox's Company Fundamentals API first (needs a saved token
-/// AND a refreshed instrument cache to resolve the ISIN) — falls back to
-/// Yahoo automatically if either isn't set up yet, or if Upstox's call
-/// itself fails, so this command still works with zero Upstox
-/// configuration, exactly as before.
-#[tauri::command]
-async fn get_fundamentals(state: State<'_, AppState>, symbol: String) -> Result<FundamentalsView, String> {
-    let instrument = state
-        .instruments
-        .find_by_symbol(&symbol)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
-
-    // Per-FIELD merging, not per-SOURCE fallback: Upstox's own fundamentals
-    // suite documents that it simply doesn't return market_cap,
-    // dividend_yield, or week52_high/low at all — those fields came back
-    // permanently empty for any symbol Upstox otherwise succeeded on,
-    // even though Yahoo provides exactly those fields and was sitting
-    // right there unused. Now both sources are tried and merged field by
-    // field, each field keeping whichever source actually has it, Upstox
-    // preferred where both do (it's the more current, authoritative
-    // source for the fields it does cover).
-    let upstox_view = try_upstox_fundamentals(&state, &instrument.symbol, &instrument.exchange).await;
-    let yahoo_view = state.yahoo_direct.fetch_fundamentals(&instrument.symbol, &instrument.exchange).await.ok().map(|f| FundamentalsView {
-        sector: f.sector,
-        industry: f.industry,
-        description: f.description,
-        market_cap: f.market_cap.map(|d| d.to_string()),
-        pe_ratio: f.pe_ratio.map(|d| d.to_string()),
-        pb_ratio: None,
-        roe: None,
-        roce: None,
-        dividend_yield: f.dividend_yield.map(|d| d.to_string()),
-        week52_high: f.week52_high.map(|d| d.to_string()),
-        week52_low: f.week52_low.map(|d| d.to_string()),
-        volume: None,
-        revenue_by_period: f
-            .revenue_by_period
-            .into_iter()
-            .map(|p| RevenuePeriodView { period_end: p.period_end, revenue: p.revenue.to_string(), net_income: p.net_income.map(|d| d.to_string()) })
-            .collect(),
-        source: "yahoo".to_string(),
-    });
-
-    let mut view = match (upstox_view, yahoo_view) {
-        (Some(u), Some(y)) => FundamentalsView {
-            sector: u.sector.or(y.sector),
-            industry: u.industry.or(y.industry),
-            description: u.description.or(y.description),
-            market_cap: u.market_cap.or(y.market_cap),
-            pe_ratio: u.pe_ratio.or(y.pe_ratio),
-            pb_ratio: u.pb_ratio.or(y.pb_ratio),
-            roe: u.roe.or(y.roe),
-            roce: u.roce.or(y.roce),
-            dividend_yield: u.dividend_yield.or(y.dividend_yield),
-            week52_high: u.week52_high.or(y.week52_high),
-            week52_low: u.week52_low.or(y.week52_low),
-            volume: None,
-            revenue_by_period: if u.revenue_by_period.is_empty() { y.revenue_by_period } else { u.revenue_by_period },
-            source: "upstox+yahoo".to_string(),
-        },
-        (Some(u), None) => u,
-        (None, Some(y)) => y,
-        (None, None) => FundamentalsView {
-            sector: None,
-            industry: None,
-            description: None,
-            market_cap: None,
-            pe_ratio: None,
-            pb_ratio: None,
-            roe: None,
-            roce: None,
-            dividend_yield: None,
-            week52_high: None,
-            week52_low: None,
-            volume: None,
-            revenue_by_period: Vec::new(),
-            source: "none".to_string(),
-        },
-    };
-
-    // Volume is always fetched live (via the same priority-ordered
-    // provider used everywhere else), never from a "fundamentals"
-    // endpoint — it's today's trading activity, not a static company
-    // metric. Best-effort: a failed quote here just leaves volume unset,
-    // same as every other optional field in this view.
-    if let Ok(quote) = state.market_data.fetch_quote(&instrument.symbol, &instrument.exchange).await {
-        view.volume = quote.volume;
-    }
-
-    // Genuinely nothing from any of the three sources — return a real
-    // error here (not a silently-empty "successful" view) so the
-    // frontend's existing calm "fundamentals aren't available" message
-    // still shows correctly. This now only triggers when Upstox, Yahoo,
-    // AND Alpha Vantage have all failed or aren't configured — not
-    // whenever just one of them has an off day, which is what used to
-    // happen.
-    if view.source == "none" {
-        return Err(format!("{symbol}: no fundamentals available from Upstox or Yahoo"));
-    }
-
-    Ok(view)
-}
-
-/// Returns None on ANY failure along the way (no token, no cached ISIN,
-/// the API call itself failing) — every failure mode here just means
-/// "fall back to Yahoo," never an error the caller has to handle
-/// specially, which is what keeps get_fundamentals itself simple.
-async fn try_upstox_fundamentals(state: &State<'_, AppState>, symbol: &str, exchange: &str) -> Option<FundamentalsView> {
-    let token = state.app_settings.get(UPSTOX_ANALYTICS_TOKEN_SETTING).await.ok().flatten()?;
-    if token.trim().is_empty() {
-        return None;
-    }
-    let isin = state.upstox_instruments.get_isin(symbol, exchange).await.ok().flatten()?;
-    let f = state.upstox_fundamentals.fetch_fundamentals(&isin, &token).await.ok()?;
-
-    Some(FundamentalsView {
-        sector: f.sector,
-        industry: f.industry,
-        description: f.description,
-        market_cap: None, // not returned by Upstox's fundamentals suite
-        pe_ratio: f.pe_ratio.map(|v| v.to_string()),
-        pb_ratio: f.pb_ratio.map(|v| v.to_string()),
-        roe: f.roe.map(|v| v.to_string()),
-        roce: f.roce.map(|v| v.to_string()),
-        dividend_yield: None, // not returned by Upstox's fundamentals suite
-        week52_high: None,
-        week52_low: None,
-        volume: None,
-        revenue_by_period: f
-            .income_statement
-            .into_iter()
-            .map(|p| RevenuePeriodView {
-                period_end: p.period_end,
-                revenue: p.revenue.to_string(),
-                net_income: p.net_profit.map(|d| d.to_string()),
-            })
-            .collect(),
-        source: "upstox".to_string(),
-    })
-}
-
-#[derive(Serialize)]
-struct NewsItemView {
-    title: String,
-    publisher: String,
-    link: String,
-    published_at: String,
-    is_regulatory: bool,
-}
-
-/// Top 5, regulatory-flagged items first — see the honesty note at the
-/// top of yahoo_fundamentals_news.rs for exactly what "regulatory" means
-/// here (a keyword match over headlines, not a verified separate filings
-/// feed). Tries Upstox's News API first (needs a saved token and a
-/// cached instrument_key), falls back to Yahoo automatically otherwise —
-/// same "always still works with zero Upstox setup" reasoning as
-/// get_fundamentals.
-#[tauri::command]
-async fn get_stock_news(state: State<'_, AppState>, symbol: String, limit: usize) -> Result<Vec<NewsItemView>, String> {
-    let instrument = state
-        .instruments
-        .find_by_symbol(&symbol)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
-
-    // Real, verified regulatory filings first — genuinely different from
-    // the keyword-matched "regulatory" guess applied to general news
-    // below. Best-effort: NSE/BSE are both unofficial, occasionally
-    // blocked (NSE specifically blocks cloud/datacenter IPs, though this
-    // app runs on the user's own machine), so a failure here just means
-    // no real filings this time, not a broken News tab — falls straight
-    // through to the general news section either way.
-    let mut regulatory_items = Vec::new();
-    match instrument.exchange.to_uppercase().as_str() {
-        "NSE" => {
-            let client = pm_infrastructure::market_data::nse_announcements::NseAnnouncementsClient::new();
-            if let Ok(rows) = client.fetch_announcements(&instrument.symbol).await {
-                regulatory_items.extend(rows.into_iter().map(|r| regulatory_to_news_item(r, "NSE")));
-            }
-        }
-        "BSE" => {
-            let client = pm_infrastructure::market_data::bse_announcements::BseAnnouncementsClient::new();
-            if let Ok(rows) = client.fetch_announcements(&instrument.symbol).await {
-                regulatory_items.extend(rows.into_iter().map(|r| regulatory_to_news_item(r, "BSE")));
-            }
-        }
-        _ => {}
-    }
-
-    if let Some(items) = try_upstox_news(&state, &instrument.symbol, &instrument.exchange, limit).await {
-        regulatory_items.extend(items);
-        regulatory_items.truncate(limit);
-        return Ok(regulatory_items);
-    }
-
-    let news = state
-        .yahoo_direct
-        .fetch_news(&instrument.symbol, &instrument.exchange, limit)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    regulatory_items.extend(news.into_iter().map(|n| NewsItemView {
-        title: n.title,
-        publisher: n.publisher,
-        link: n.link,
-        published_at: n.published_at.format("%Y-%m-%d %H:%M UTC").to_string(),
-        is_regulatory: n.is_regulatory,
-    }));
-    regulatory_items.truncate(limit);
-    Ok(regulatory_items)
-}
-
-/// Falls back to the exchange's own public page for this symbol when
-/// there's no specific attachment URL — real evidence from a live test
-/// showed every item in a real batch came back with no attachment link
-/// at all (the exact field NSE returns this under isn't confirmed;
-/// rather than keep guessing field names blind, this guarantees every
-/// item has SOMEWHERE real to click through to regardless of whether
-/// that specific field guess is right).
-fn regulatory_to_news_item(a: pm_infrastructure::market_data::nse_announcements::RegulatoryAnnouncement, exchange: &str) -> NewsItemView {
-    let fallback_link = if exchange.eq_ignore_ascii_case("BSE") {
-        "https://www.bseindia.com/corporates/ann.html".to_string()
-    } else {
-        format!("https://www.nseindia.com/get-quotes/equity?symbol={}", a.symbol)
-    };
-    NewsItemView {
-        title: a.subject,
-        publisher: "NSE/BSE (verified filing)".to_string(),
-        link: a.attachment_url.filter(|u| !u.is_empty()).unwrap_or(fallback_link),
-        published_at: a.broadcast_date,
-        is_regulatory: true,
-    }
-}
-
-/// Same "None on any failure, caller falls back" contract as
-/// try_upstox_fundamentals. Resolves instrument_key (not ISIN — the News
-/// API takes instrument_key, the Fundamentals API takes ISIN, different
-/// identifiers for the same underlying instrument).
-async fn try_upstox_news(state: &State<'_, AppState>, symbol: &str, exchange: &str, limit: usize) -> Option<Vec<NewsItemView>> {
-    let token = state.app_settings.get(UPSTOX_ANALYTICS_TOKEN_SETTING).await.ok().flatten()?;
-    if token.trim().is_empty() {
-        return None;
-    }
-    let instrument_key = state.upstox_instruments.get_instrument_key(symbol, exchange).await.ok().flatten()?;
-    let items = state.upstox_fundamentals.fetch_news(&instrument_key, &token, limit).await.ok()?;
-
-    Some(
-        items
-            .into_iter()
-            .map(|n| {
-                let published_at = chrono::DateTime::from_timestamp_millis(n.published_at_ms)
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
-                    .unwrap_or_default();
-                NewsItemView {
-                    is_regulatory: pm_infrastructure::market_data::yahoo_fundamentals_news::looks_regulatory(&n.headline),
-                    title: n.headline,
-                    publisher: "Upstox".to_string(),
-                    link: n.link,
-                    published_at,
-                }
-            })
-            .collect(),
-    )
-}
-
 /// Adds a new ticker the user wants to track. No broker/exchange validation
 /// happens here (SRS's Broker Adapter Framework isn't wired to this command
 /// yet) — this just registers the symbol as reference data so it can be
@@ -968,6 +653,14 @@ struct PortfolioSummaryRow {
     net_worth: String,
     unrealized_pnl: String,
     realized_pnl: String,
+    /// Today's move only — sum across every holding of quantity * (current
+    /// price - previous close). Different from unrealized_pnl (since-you-
+    /// bought-it) the same way HoldingView.day_gain_loss is on the
+    /// per-holding Holdings screen; this is that same number aggregated
+    /// to the whole portfolio, for the same reason: "how much did today
+    /// specifically move this portfolio" is a different question from
+    /// "what's my total gain since I bought."
+    day_gain_loss: String,
     xirr_pct: Option<f64>,
 }
 
@@ -990,16 +683,55 @@ async fn get_all_portfolios_summary(state: State<'_, AppState>) -> Result<Vec<Po
         // transactions yet) — that's not a reason to drop the whole row,
         // just to show it without an XIRR figure.
         let xirr_pct = compute_portfolio_xirr(state.clone(), portfolio.id.to_string()).await.ok().map(|x| x * 100.0);
+
+        // Same per-holding "today's move" calculation compute_holding_metrics
+        // does for the Holdings screen, summed across every holding in this
+        // portfolio — a holding missing either price just contributes zero
+        // to the sum rather than failing the whole row, same as everywhere
+        // else a missing price is handled in this app.
+        let holdings = state.holdings.list_for_portfolio(portfolio.id).await.map_err(|e| e.to_string())?;
+        let mut day_gain_loss = Decimal::ZERO;
+        for h in &holdings {
+            if let (Ok(Some(ltp)), Ok(Some(prev))) =
+                (state.prices.latest_price(h.instrument_id).await, find_previous_close(&state, h.instrument_id).await)
+            {
+                day_gain_loss += h.quantity * (ltp - prev);
+            }
+        }
+
         rows.push(PortfolioSummaryRow {
             portfolio_id: portfolio.id.to_string(),
             portfolio_name: portfolio.name,
             net_worth: summary.net_worth.round_dp(2).to_string(),
             unrealized_pnl: summary.overall_unrealized_pnl.round_dp(2).to_string(),
             realized_pnl: summary.overall_realized_pnl.round_dp(2).to_string(),
+            day_gain_loss: day_gain_loss.round_dp(2).to_string(),
             xirr_pct,
         });
     }
     Ok(rows)
+}
+
+/// Every symbol held in ANY portfolio, deduplicated — what the
+/// Consolidated view's live stream needs to actually be live across all
+/// five portfolios, not just whichever one happens to be selected.
+/// Starting a stream from "My Portfolio" with only "My Portfolio"'s own
+/// (possibly empty) holdings meant the other four portfolios' numbers in
+/// the consolidated table never updated live at all — this is the fix:
+/// the symbol list passed to the stream needs to span every portfolio,
+/// not just the one currently being viewed.
+#[tauri::command]
+async fn get_all_held_symbols(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let portfolios = state.portfolios.list_all().await.map_err(|e| e.to_string())?;
+    let mut symbols = std::collections::HashSet::new();
+    for portfolio in portfolios {
+        let holdings = state.holdings.list_for_portfolio(portfolio.id).await.map_err(|e| e.to_string())?;
+        for h in holdings {
+            let instrument = state.instruments.get(h.instrument_id).await.map_err(|e| e.to_string())?;
+            symbols.insert(instrument.symbol);
+        }
+    }
+    Ok(symbols.into_iter().collect())
 }
 
 #[derive(Serialize)]
@@ -3138,13 +2870,11 @@ fn main() {
             get_dashboard_summary,
             get_dashboard_by_market,
             get_all_portfolios_summary,
+            get_all_held_symbols,
             get_tax_summary,
             get_tax_loss_harvesting_candidates,
             list_holdings,
             list_instruments,
-            list_equity_instruments,
-            get_fundamentals,
-            get_stock_news,
             add_instrument,
             backfill_history,
             get_price_history,

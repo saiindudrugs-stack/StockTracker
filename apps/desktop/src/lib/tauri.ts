@@ -4,7 +4,6 @@ import type {
   AlertRuleView,
   CandleView,
   DashboardSummary,
-  FundamentalsView,
   HoldingView,
   InstrumentView,
   MarketSnapshotView,
@@ -14,7 +13,6 @@ import type {
   TaxLossHarvestingView,
   MfHoldingView,
   MfSchemeSearchResultView,
-  NewsItemView,
   PortfolioAnalysisView,
   PortfolioView,
   PriceHistoryPoint,
@@ -40,6 +38,7 @@ export const api = {
   getDashboardByMarket: (portfolioId: string) =>
     invoke<MarketSummaryView[]>("get_dashboard_by_market", { portfolioId }),
   getAllPortfoliosSummary: () => invoke<PortfolioSummaryRow[]>("get_all_portfolios_summary"),
+  getAllHeldSymbols: () => invoke<string[]>("get_all_held_symbols"),
   getTaxSummary: (portfolioId: string) => invoke<TaxSummaryView>("get_tax_summary", { portfolioId }),
   getTaxLossHarvestingCandidates: (portfolioId: string) =>
     invoke<TaxLossHarvestingView>("get_tax_loss_harvesting_candidates", { portfolioId }),
@@ -194,8 +193,6 @@ export const api = {
   // and news are properties of the company, not any one portfolio, same
   // reasoning as getMarketSnapshot.
   listEquityInstruments: () => invoke<InstrumentView[]>("list_equity_instruments"),
-  getFundamentals: (symbol: string) => invoke<FundamentalsView>("get_fundamentals", { symbol }),
-  getStockNews: (symbol: string, limit: number) => invoke<NewsItemView[]>("get_stock_news", { symbol, limit }),
 };
 
 export interface LivePriceTick {

@@ -61,6 +61,17 @@ export function DashboardScreen({ portfolioId, isMyPortfolio }: { portfolioId: s
   const [marketSummaries, setMarketSummaries] = useState<MarketSummaryView[]>([]);
 
   const [allPortfolios, setAllPortfolios] = useState<PortfolioSummaryRow[] | null>(null);
+  const [allHeldSymbols, setAllHeldSymbols] = useState<string[] | null>(null);
+
+  // The Consolidated table aggregates every portfolio, so a live stream
+  // that's actually live for it needs every symbol held anywhere — not
+  // just this one portfolio's holdings, which is what starting the
+  // stream from here used to be limited to (and could easily be empty,
+  // silently making the whole consolidated view non-live).
+  useEffect(() => {
+    if (!isMyPortfolio) return;
+    api.getAllHeldSymbols().then(setAllHeldSymbols).catch(() => {});
+  }, [isMyPortfolio]);
 
   useEffect(() => {
     if (!isMyPortfolio) return;
@@ -308,7 +319,10 @@ export function DashboardScreen({ portfolioId, isMyPortfolio }: { portfolioId: s
 
       {isMyPortfolio && (
         <div style={{ marginBottom: 16 }}>
-          <LiveStreamControl symbols={holdings.map((h) => h.symbol)} label="This portfolio's holdings:" />
+          <LiveStreamControl
+            symbols={isMyPortfolio && allHeldSymbols ? allHeldSymbols : holdings.map((h) => h.symbol)}
+            label={isMyPortfolio ? "Every portfolio's holdings (for the consolidated view below):" : "This portfolio's holdings:"}
+          />
         </div>
       )}
 
@@ -328,6 +342,7 @@ export function DashboardScreen({ portfolioId, isMyPortfolio }: { portfolioId: s
                 <th style={tableHeaderCell}>Net worth</th>
                 <th style={tableHeaderCell}>Unrealized P/L</th>
                 <th style={tableHeaderCell}>Realized P/L</th>
+                <th style={tableHeaderCell}>Day's Gain/Loss</th>
                 <th style={{ ...tableHeaderCell, ...lastHeaderCell }}>XIRR</th>
               </tr>
             </thead>
@@ -338,6 +353,7 @@ export function DashboardScreen({ portfolioId, isMyPortfolio }: { portfolioId: s
                   <td style={{ padding: "6px 8px" }}>₹{fmtMoney(p.net_worth)}</td>
                   <td style={{ padding: "6px 8px", color: pnlColor(parseFloat(p.unrealized_pnl)) }}>₹{fmtMoney(p.unrealized_pnl)}</td>
                   <td style={{ padding: "6px 8px", color: pnlColor(parseFloat(p.realized_pnl)) }}>₹{fmtMoney(p.realized_pnl)}</td>
+                  <td style={{ padding: "6px 8px", color: pnlColor(parseFloat(p.day_gain_loss)) }}>₹{fmtMoney(p.day_gain_loss)}</td>
                   <td style={{ padding: "6px 8px", color: p.xirr_pct != null ? pnlColor(p.xirr_pct) : undefined }}>
                     {p.xirr_pct != null ? `${p.xirr_pct.toFixed(2)}%` : "—"}
                   </td>

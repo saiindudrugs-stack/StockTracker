@@ -23,7 +23,7 @@ jobs:
           - platform: ubuntu-22.04
             name: Linux (.deb/.AppImage)
 
-    runs-on: ${{ matrix.platform }}
+  runs-on: ${{ matrix.platform }}
     name: ${{ matrix.name }}
     env:
       CARGO_INCREMENTAL: "0"
@@ -66,6 +66,7 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev
+
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm ci

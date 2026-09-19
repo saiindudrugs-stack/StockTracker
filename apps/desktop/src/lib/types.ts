@@ -23,6 +23,7 @@ export interface PortfolioSummaryRow {
   net_worth: string;
   unrealized_pnl: string;
   realized_pnl: string;
+  day_gain_loss: string;
   xirr_pct: number | null;
 }
 
@@ -204,35 +205,4 @@ export interface MfHoldingView {
   years_held: number | null;
 }
 
-export interface RevenuePeriodView {
-  period_end: string;
-  revenue: string;
-  net_income: string | null;
-}
-
-export interface FundamentalsView {
-  sector: string | null;
-  industry: string | null;
-  description: string | null;
-  market_cap: string | null;
-  pe_ratio: string | null;
-  pb_ratio: string | null;
-  roe: string | null;
-  roce: string | null;
-  dividend_yield: string | null;
-  week52_high: string | null;
-  week52_low: string | null;
-  volume: number | null;
-  revenue_by_period: RevenuePeriodView[];
-  source: string;
-}
-
-export interface NewsItemView {
-  title: string;
-  publisher: string;
-  link: string;
-  published_at: string;
-  is_regulatory: boolean;
-}
-
-export type ScreenId = "dashboard" | "holdings" | "mutual-funds" | "watchlist" | "analysis" | "chart" | "news" | "settings";
+export type ScreenId = "dashboard" | "holdings" | "mutual-funds" | "watchlist" | "analysis" | "chart" | "settings";
