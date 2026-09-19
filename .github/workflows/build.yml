@@ -23,7 +23,7 @@ jobs:
           - platform: ubuntu-22.04
             name: Linux (.deb/.AppImage)
 
-  runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.platform }}
     name: ${{ matrix.name }}
     env:
       CARGO_INCREMENTAL: "0"
