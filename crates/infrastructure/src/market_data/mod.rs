@@ -50,6 +50,12 @@ pub struct Quote {
     pub week52_high: Option<Decimal>,
     pub week52_low: Option<Decimal>,
     pub volume: Option<u64>,
+    /// Yesterday's close, when the source's own quote response carries it
+    /// directly (Upstox's OHLC block does) — a live-fetched fallback for
+    /// when the app's own locally-stored daily price history doesn't have
+    /// a prior day yet (freshly-added Watchlist symbols, most commonly).
+    /// None for sources that don't provide this inline.
+    pub previous_close: Option<Decimal>,
 }
 
 #[async_trait]

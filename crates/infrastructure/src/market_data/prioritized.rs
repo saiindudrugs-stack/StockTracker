@@ -126,7 +126,7 @@ mod tests {
             if self.should_fail {
                 Err(MarketDataError::RequestFailed(format!("{} simulated failure", self.name)))
             } else {
-                Ok(Quote { price: self.price, day_high: None, day_low: None, week52_high: None, week52_low: None, volume: None })
+                Ok(Quote { price: self.price, day_high: None, day_low: None, week52_high: None, week52_low: None, volume: None, previous_close: None })
             }
         }
         async fn fetch_daily_history_1y(&self, _symbol: &str, _exchange: &str) -> Result<Vec<DailyBar>, MarketDataError> {

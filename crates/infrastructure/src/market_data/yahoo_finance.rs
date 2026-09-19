@@ -130,6 +130,8 @@ struct YahooMeta {
     fifty_two_week_low: Option<f64>,
     #[serde(rename = "regularMarketVolume")]
     regular_market_volume: Option<u64>,
+    #[serde(rename = "chartPreviousClose")]
+    chart_previous_close: Option<f64>,
 }
 #[derive(Debug, Deserialize)]
 struct YahooIndicators {
@@ -208,6 +210,7 @@ impl MarketDataProvider for YahooFinanceProvider {
             week52_high: meta.fifty_two_week_high.and_then(Self::f64_to_decimal),
             week52_low: meta.fifty_two_week_low.and_then(Self::f64_to_decimal),
             volume: meta.regular_market_volume,
+            previous_close: meta.chart_previous_close.and_then(Self::f64_to_decimal),
         })
     }
 

@@ -284,6 +284,7 @@ impl MarketDataProvider for UpstoxProvider {
             week52_high: None,
             week52_low: None,
             volume: Some(quote.volume as u64),
+            previous_close: quote.ohlc.as_ref().and_then(|o| o.close).and_then(|v| Decimal::from_str(&v.to_string()).ok()),
         })
     }
 
@@ -373,6 +374,13 @@ struct UpstoxQuote {
 struct Ohlc {
     high: f64,
     low: f64,
+    /// Previous trading day's close — confirmed present in Upstox's own
+    /// documented response shape (their /market-quote/quotes endpoint's
+    /// ohlc block includes open/high/low/close, same as their /ohlc
+    /// endpoint's prev_ohlc block). Was never read before, which is why
+    /// Prev Close/Day Chg% showed blank for any symbol without locally-
+    /// stored price history yet — this feeds that as a live fallback.
+    close: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -458,7 +466,13 @@ mod tests {
         let parsed: QuoteResponse = serde_json::from_str(sample).unwrap();
         let quote = parsed.data.into_values().next().unwrap();
         assert_eq!(quote.last_price, 1288.6);
-        assert_eq!(quote.ohlc.unwrap().high, 1304.6);
+        assert_eq!(quote.ohlc.as_ref().unwrap().high, 1304.6);
+        // Real gap this closes: `close` was already present in this exact
+        // test's sample JSON before the Ohlc struct had a field for it —
+        // serde silently ignores unknown JSON keys, so this test passed
+        // the whole time without ever verifying `close` was captured,
+        // which is exactly how the missing-Prev-Close bug went unnoticed.
+        assert_eq!(quote.ohlc.unwrap().close, Some(1270.0));
     }
 
     #[test]

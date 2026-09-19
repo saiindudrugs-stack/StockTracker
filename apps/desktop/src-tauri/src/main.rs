@@ -1509,7 +1509,15 @@ async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Resu
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown symbol '{symbol}'"))?;
     let quote = state.market_data.fetch_quote(&instrument.symbol, &instrument.exchange).await.map_err(|e| e.to_string())?;
-    let previous_close = find_previous_close(&state, instrument.id).await?;
+    // Falls back to the quote's own previous_close (Upstox's OHLC block
+    // has this; Yahoo's chart meta does too) when there's no locally-
+    // stored daily history yet — the case for any symbol just added to
+    // the Watchlist, which otherwise showed a blank Prev Close/Day Chg%
+    // until a full day-history fetch had run for it at least once.
+    let previous_close = match find_previous_close(&state, instrument.id).await? {
+        Some(prev) => Some(prev),
+        None => quote.previous_close,
+    };
     let day_change_pct = previous_close.and_then(|prev| {
         if prev.is_zero() {
             None
@@ -1519,6 +1527,20 @@ async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Resu
         }
     });
 
+    // Best-effort gap-fill: Upstox's own quote response has no 52-week
+    // range field at all (confirmed against their documented response
+    // shape — it's simply not part of that endpoint), unlike Yahoo's,
+    // which does. Only fetched when actually missing, so this costs
+    // nothing when Yahoo itself is already the source that succeeded.
+    let (week52_high, week52_low) = if quote.week52_high.is_none() && quote.week52_low.is_none() {
+        match state.yahoo_direct.fetch_quote(&instrument.symbol, &instrument.exchange).await {
+            Ok(yahoo_quote) => (yahoo_quote.week52_high, yahoo_quote.week52_low),
+            Err(_) => (None, None),
+        }
+    } else {
+        (quote.week52_high, quote.week52_low)
+    };
+
     Ok(MarketSnapshotView {
         symbol: instrument.symbol,
         exchange: instrument.exchange,
@@ -1526,8 +1548,8 @@ async fn get_market_snapshot(state: State<'_, AppState>, symbol: String) -> Resu
         previous_close: previous_close.map(|p| p.to_string()),
         day_high: quote.day_high.map(|d| d.to_string()),
         day_low: quote.day_low.map(|d| d.to_string()),
-        week52_high: quote.week52_high.map(|d| d.to_string()),
-        week52_low: quote.week52_low.map(|d| d.to_string()),
+        week52_high: week52_high.map(|d| d.to_string()),
+        week52_low: week52_low.map(|d| d.to_string()),
         volume: quote.volume,
         day_change_pct,
     })
@@ -1822,6 +1844,7 @@ async fn save_market_data_priority(state: State<'_, AppState>, order: String) ->
     state.app_settings.set(MARKET_DATA_PRIORITY_SETTING, &order).await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
 /// Self-healing: a name can go stale in the stored setting (e.g.
 /// Alpha Vantage was removed as a quote source) without the setting
 /// itself ever being touched — a raw, un-validated read would keep
