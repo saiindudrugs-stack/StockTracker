@@ -28,8 +28,6 @@ export function SettingsScreen({
   const [upstoxTokenInput, setUpstoxTokenInput] = useState("");
   const [upstoxTokenSaved, setUpstoxTokenSaved] = useState<boolean | null>(null);
   const [upstoxSaveMsg, setUpstoxSaveMsg] = useState<string | null>(null);
-  const [upstoxRefreshing, setUpstoxRefreshing] = useState(false);
-  const [upstoxRefreshMsg, setUpstoxRefreshMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -47,19 +45,6 @@ export function SettingsScreen({
       setUpstoxSaveMsg("Saved. Takes effect immediately.");
     } catch (e) {
       setUpstoxSaveMsg(String(e));
-    }
-  }
-
-  async function handleRefreshUpstoxInstruments() {
-    setUpstoxRefreshing(true);
-    setUpstoxRefreshMsg(null);
-    try {
-      const result = await api.refreshUpstoxInstrumentCache();
-      setUpstoxRefreshMsg(`Cached ${result.instrument_count.toLocaleString()} NSE + BSE equity instruments.`);
-    } catch (e) {
-      setUpstoxRefreshMsg(String(e));
-    } finally {
-      setUpstoxRefreshing(false);
     }
   }
 
@@ -417,16 +402,6 @@ export function SettingsScreen({
           </button>
         </div>
         {upstoxSaveMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>{upstoxSaveMsg}</p>}
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button onClick={handleRefreshUpstoxInstruments} disabled={upstoxRefreshing || !upstoxTokenSaved}>
-            {upstoxRefreshing ? "Refreshing…" : "Refresh Instrument List"}
-          </button>
-          <span style={{ fontSize: 11, color: colors.textMuted }}>
-            Optional — symbols resolve automatically on first use. Only useful for pre-warming
-            many symbols at once.
-          </span>
-        </div>
-        {upstoxRefreshMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{upstoxRefreshMsg}</p>}
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>

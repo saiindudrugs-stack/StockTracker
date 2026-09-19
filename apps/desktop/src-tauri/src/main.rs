@@ -1865,6 +1865,7 @@ async fn save_market_data_priority(state: State<'_, AppState>, order: String) ->
     state.app_settings.set(MARKET_DATA_PRIORITY_SETTING, &order).await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
 /// Self-healing: a name can go stale in the stored setting (e.g.
 /// Alpha Vantage was removed as a quote source) without the setting
 /// itself ever being touched — a raw, un-validated read would keep
@@ -2077,7 +2078,18 @@ async fn test_announcements_connection(provider: String) -> Result<String, Strin
     let result = match provider.as_str() {
         "nse" => {
             let client = pm_infrastructure::market_data::nse_announcements::NseAnnouncementsClient::new();
-            client.fetch_announcements("RELIANCE").await
+            let result = client.fetch_announcements("RELIANCE").await;
+            // Real diagnostic, not another guess: the attachment_url field
+            // name guess (`attchmntFile`) has never been verified against
+            // a real NSE response — this reports how many of the fetched
+            // rows actually carry one, so the next test tells us whether
+            // that guess is right (most rows have it), sometimes right
+            // (inconsistent), or simply wrong (zero ever do).
+            if let Ok(rows) = &result {
+                let with_attachment = rows.iter().filter(|r| r.attachment_url.as_deref().is_some_and(|u| !u.is_empty())).count();
+                return Ok(format!("Connected — {} announcement(s) found for RELIANCE, {} with a real attachment link", rows.len(), with_attachment));
+            }
+            result
         }
         "bse" => {
             let client = pm_infrastructure::market_data::bse_announcements::BseAnnouncementsClient::new();
