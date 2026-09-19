@@ -143,7 +143,7 @@ export const api = {
   refreshUpstoxInstrumentCache: () => invoke<{ instrument_count: number }>("refresh_upstox_instrument_cache"),
 
   saveMarketDataPriority: (order: string) => invoke<void>("save_market_data_priority", { order }),
-  getMarketDataPriority: () => invoke<string>("get_market_data_priority"),
+  getMarketDataPriority: () => invoke<string>("get_market_data_priority_order"),
 
   saveFlashThreshold: (thresholdPct: number) => invoke<void>("save_flash_threshold", { thresholdPct }),
   getFlashThreshold: () => invoke<number>("get_flash_threshold"),

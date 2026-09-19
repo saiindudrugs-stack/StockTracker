@@ -1831,7 +1831,7 @@ async fn save_market_data_priority(state: State<'_, AppState>, order: String) ->
 /// cleaned value back so this fixes itself once rather than re-filtering
 /// on every read forever.
 #[tauri::command]
-async fn get_market_data_priority(state: State<'_, AppState>) -> Result<String, String> {
+async fn get_market_data_priority_order(state: State<'_, AppState>) -> Result<String, String> {
     let raw = state
         .app_settings
         .get(MARKET_DATA_PRIORITY_SETTING)
@@ -3228,7 +3228,7 @@ fn main() {
             has_upstox_token,
             refresh_upstox_instrument_cache,
             save_market_data_priority,
-            get_market_data_priority,
+            get_market_data_priority_order,
             save_flash_threshold,
             get_flash_threshold,
             save_font_scale,
