@@ -1,23 +1,11 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/tauri";
-import type { FundamentalsView, InstrumentView, NewsItemView, AlphaVantageOverviewView } from "../lib/types";
+import type { FundamentalsView, InstrumentView, NewsItemView } from "../lib/types";
 import { colors, panelStyle, fmtMoney } from "../lib/theme";
 
 export function NewsAndFundamentalsScreen() {
   const [instruments, setInstruments] = useState<InstrumentView[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [overview, setOverview] = useState<AlphaVantageOverviewView | null>(null);
-  const [overviewError, setOverviewError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!selected) return;
-    setOverview(null);
-    setOverviewError(null);
-    api
-      .getMarketCapAndDividendYield(selected)
-      .then(setOverview)
-      .catch((e) => setOverviewError(String(e)));
-  }, [selected]);
   const [newsLimit, setNewsLimit] = useState(5);
   const [fundamentals, setFundamentals] = useState<FundamentalsView | null>(null);
   const [fundamentalsError, setFundamentalsError] = useState<string | null>(null);
@@ -161,32 +149,6 @@ export function NewsAndFundamentalsScreen() {
                 independently and isn't affected by this.
                 {fundamentalsError && <span style={{ display: "block", marginTop: 4, opacity: 0.7 }}>{fundamentalsError}</span>}
               </p>
-            )}
-
-            {(overview || overviewError) && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
-                  <div style={{ ...panelStyle, padding: 10 }}>
-                    <div style={{ fontSize: 10, color: colors.textMuted }}>
-                      Market cap {overview?.is_stale ? "(cached, refreshing)" : ""}
-                    </div>
-                    <div style={{ fontSize: 13, fontWeight: 500 }}>{overview ? fmtMoney(overview.market_cap) : "—"}</div>
-                  </div>
-                  <div style={{ ...panelStyle, padding: 10 }}>
-                    <div style={{ fontSize: 10, color: colors.textMuted }}>
-                      Div yield {overview?.is_stale ? "(cached, refreshing)" : ""}
-                    </div>
-                    <div style={{ fontSize: 13, fontWeight: 500 }}>
-                      {overview?.dividend_yield ? `${(parseFloat(overview.dividend_yield) * 100).toFixed(2)}%` : "—"}
-                    </div>
-                  </div>
-                </div>
-                {!overview && overviewError && (
-                  <p style={{ fontSize: 11, color: colors.textMuted, marginTop: 4, marginBottom: 0 }}>
-                    Unavailable: {overviewError}
-                  </p>
-                )}
-              </div>
             )}
 
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0 0 8px" }}>

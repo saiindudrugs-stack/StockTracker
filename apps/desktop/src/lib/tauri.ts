@@ -10,7 +10,6 @@ import type {
   MarketSnapshotView,
   MarketSummaryView,
   PortfolioSummaryRow,
-  AlphaVantageOverviewView,
   TaxSummaryView,
   TaxLossHarvestingView,
   MfHoldingView,
@@ -197,10 +196,6 @@ export const api = {
   listEquityInstruments: () => invoke<InstrumentView[]>("list_equity_instruments"),
   getFundamentals: (symbol: string) => invoke<FundamentalsView>("get_fundamentals", { symbol }),
   getStockNews: (symbol: string, limit: number) => invoke<NewsItemView[]>("get_stock_news", { symbol, limit }),
-  getMarketCapAndDividendYield: (symbol: string) => invoke<AlphaVantageOverviewView>("get_market_cap_and_dividend_yield", { symbol }),
-  testAlphaVantageConnection: () => invoke<string>("test_alpha_vantage_connection"),
-  saveAlphaVantageKey: (apiKey: string) => invoke<void>("save_alpha_vantage_key", { apiKey }),
-  hasAlphaVantageKey: () => invoke<boolean>("has_alpha_vantage_key"),
 };
 
 export interface LivePriceTick {

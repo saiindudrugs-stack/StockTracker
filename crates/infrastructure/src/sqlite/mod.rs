@@ -21,7 +21,6 @@ pub mod price_repository;
 pub mod transaction_repository;
 pub mod upstox_instrument_cache;
 pub mod kite_instrument_cache;
-pub mod alpha_vantage_overview_cache;
 
 pub use alert_rule_repository::SqliteAlertRuleRepository;
 pub use app_settings::SqliteAppSettings;
@@ -33,7 +32,6 @@ pub use price_repository::SqlitePriceRepository;
 pub use transaction_repository::SqliteTransactionRepository;
 pub use upstox_instrument_cache::{SqliteUpstoxInstrumentCache, UpstoxInstrumentRow};
 pub use kite_instrument_cache::SqliteKiteInstrumentCache;
-pub use alpha_vantage_overview_cache::{SqliteAlphaVantageOverviewCache, CachedOverview};
 
 /// Shared handle to the connection. `rusqlite::Connection` isn't `Sync`, so
 /// every repository wraps blocking calls in `spawn_blocking` against a clone
@@ -247,18 +245,5 @@ CREATE TABLE IF NOT EXISTS kite_instrument_cache (
     exchange TEXT NOT NULL,
     instrument_token INTEGER NOT NULL,
     PRIMARY KEY (trading_symbol, exchange)
-);
-
--- Real TTL cache, not disposable-and-wholesale-replaced like the
--- instrument caches above — Alpha Vantage's free tier allows only 25
--- requests/day TOTAL, so this deliberately serves a stale (up to 1 hour
--- old) value rather than re-fetching on every fundamentals view. One row
--- per symbol, upserted in place; fetched_at is a Unix timestamp checked
--- against a 1-hour TTL by the caller, not by SQLite itself.
-CREATE TABLE IF NOT EXISTS alpha_vantage_overview_cache (
-    symbol TEXT PRIMARY KEY,
-    market_cap TEXT,
-    dividend_yield TEXT,
-    fetched_at INTEGER NOT NULL
 );
 "#;

@@ -15,7 +15,6 @@
 pub mod yahoo_finance;
 pub mod yahoo_fundamentals_news;
 pub mod amfi;
-pub mod alpha_vantage;
 pub mod composite;
 pub mod upstox;
 pub mod upstox_fundamentals;

@@ -253,26 +253,6 @@ export function SettingsScreen({
     }
   }
 
-  const [avKeyInput, setAvKeyInput] = useState("");
-  const [avKeySaved, setAvKeySaved] = useState<boolean | null>(null);
-  const [avSaveMsg, setAvSaveMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    api.hasAlphaVantageKey().then(setAvKeySaved).catch(() => setAvKeySaved(false));
-  }, []);
-
-  async function handleSaveAlphaVantageKey() {
-    if (!avKeyInput.trim()) return;
-    try {
-      await api.saveAlphaVantageKey(avKeyInput.trim());
-      setAvKeySaved(true);
-      setAvKeyInput("");
-      setAvSaveMsg("Saved. Takes effect immediately — no restart needed.");
-    } catch (e) {
-      setAvSaveMsg(String(e));
-    }
-  }
-
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
 
@@ -428,37 +408,6 @@ export function SettingsScreen({
           <span style={{ fontSize: 12, fontWeight: 600 }}>BSE:</span>
           <ConnectionIndicator onTest={() => api.testAnnouncementsConnection("bse")} />
         </div>
-      </div>
-
-      <div style={{ ...panelStyle, marginBottom: 16 }}>
-        <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 6px" }}>Alpha Vantage</p>
-        <p style={{ fontSize: 12, color: colors.textMuted, margin: "0 0 10px" }}>
-          Scoped to market cap and dividend yield only (shown on the News screen) — unlinked from
-          live prices entirely, since its free tier allows just 25 requests/day. Refreshed at most
-          once an hour per symbol. Stored locally only; never committed to GitHub.
-        </p>
-        <p style={{ fontSize: 12, margin: "0 0 8px" }}>
-          Alpha Vantage key:{" "}
-          {avKeySaved === null ? "checking…" : avKeySaved ? (
-            <span style={{ color: colors.success, fontWeight: 600 }}>saved</span>
-          ) : (
-            <span style={{ color: colors.textMuted }}>not set</span>
-          )}
-        </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-          <input
-            type="password"
-            value={avKeyInput}
-            onChange={(e) => setAvKeyInput(e.target.value)}
-            placeholder={avKeySaved ? "Enter a new key to replace it" : "Paste your Alpha Vantage API key"}
-            style={{ width: 260 }}
-          />
-          <button onClick={handleSaveAlphaVantageKey} disabled={!avKeyInput.trim()}>
-            Save
-          </button>
-        </div>
-        {avSaveMsg && <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>{avSaveMsg}</p>}
-        <ConnectionIndicator onTest={() => api.testAlphaVantageConnection()} />
       </div>
 
       <div style={{ ...panelStyle, marginBottom: 16 }}>
